@@ -4,7 +4,7 @@ import { conversations, dmMessages, activeDMPartner } from './useDMs'
 import { useAuth } from './useAuth'
 import { callState, callPartner, callToken, callUrl, fetchVideoToken, setWsSender } from './useVideoCall'
 
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 const { username } = useAuth()
 
 // ── Singleton shared state ───────────────────────────────────────────────────

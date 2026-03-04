@@ -779,7 +779,7 @@ app.post('/api/dms/:username', (req, res) => {
 
 // --- WebSocket server ---
 const server = createServer(app)
-const wss = new WebSocketServer({ server })
+const wss = new WebSocketServer({ server, path: '/ws' })
 
 const messages = []
 const clients = new Map()
