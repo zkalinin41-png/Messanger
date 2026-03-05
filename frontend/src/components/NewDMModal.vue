@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useDMs } from '@/composables/useDMs'
 import Input from '@/components/ui/input/Input.vue'

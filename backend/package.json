@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "tsx server.ts",
+    "dev": "tsx watch server.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -19,6 +19,15 @@
     "ws": "^8.16.0"
   },
   "devDependencies": {
-    "@types/nodemailer": "^7.0.11"
+    "@types/bcryptjs": "^3.0.0",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/multer": "^1.4.12",
+    "@types/nodemailer": "^7.0.11",
+    "@types/ws": "^8.5.14",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3"
   }
 }

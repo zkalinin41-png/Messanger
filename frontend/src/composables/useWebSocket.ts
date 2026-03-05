@@ -1,28 +1,29 @@
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import { groups, groupMessages, groupMembers, activeGroupId } from './useGroups'
 import { conversations, dmMessages, activeDMPartner } from './useDMs'
 import { useAuth } from './useAuth'
 import { callState, callPartner, callToken, callUrl, callMode, fetchVideoToken, setWsSender } from './useVideoCall'
+import type { OnlineUser, OnlineStatus, ChatMessage, Conversation, ReplyTo, FileData } from '../types'
 
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
+const WS_URL: string = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 const { username } = useAuth()
 
 // ── Singleton shared state ───────────────────────────────────────────────────
-const ws = ref(null)
-export const connected = ref(false)
-export const joined = ref(false)
-export const messages = ref([])
-export const onlineUsers = ref([])
-export const typingUsers = ref([])
+const ws: Ref<WebSocket | null> = ref(null)
+export const connected: Ref<boolean> = ref(false)
+export const joined: Ref<boolean> = ref(false)
+export const messages: Ref<ChatMessage[]> = ref([])
+export const onlineUsers: Ref<OnlineUser[]> = ref([])
+export const typingUsers: Ref<string[]> = ref([])
 
-export const groupsNeedRefresh = ref(false)
-export const groupMemberUpdateId = ref(null)
+export const groupsNeedRefresh: Ref<boolean> = ref(false)
+export const groupMemberUpdateId: Ref<number | null> = ref(null)
 
-export const dmTypingUsers = ref({})    // { [partnerUsername]: boolean }
-export const groupTypingUsers = ref({}) // { [groupId]: string[] }
-export const onlineStatuses = ref({})   // { [username]: { online: bool, lastSeen: number|null } }
+export const dmTypingUsers: Ref<Record<string, boolean>> = ref({})
+export const groupTypingUsers: Ref<Record<number, string[]>> = ref({})
+export const onlineStatuses: Ref<Record<string, OnlineStatus>> = ref({})
 
-const _error = ref(null)
+const _error: Ref<string | null> = ref(null)
 
 // Give useVideoCall a way to send WS messages without a circular import
 setWsSender((payload) => {
@@ -30,13 +31,13 @@ setWsSender((payload) => {
 })
 
 // ── Timers ───────────────────────────────────────────────────────────────────
-const typingTimers = {}
-const dmTypingTimers = {}
-const groupTypingTimers = {}
-let reconnectTimer = null
+const typingTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+const dmTypingTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+const groupTypingTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 // ── Message handler ──────────────────────────────────────────────────────────
-function handleMessage(msg) {
+function handleMessage(msg: any): void {
   switch (msg.type) {
     case 'history':
       messages.value = msg.messages
@@ -224,7 +225,7 @@ function handleMessage(msg) {
 
     case 'call_accept':
       // We are the caller — fetch our own token and go connected
-      fetchVideoToken(callPartner.value).then(({ token, url }) => {
+      fetchVideoToken(callPartner.value!).then(({ token, url }) => {
         callToken.value = token
         callUrl.value = url
         callState.value = 'connected'
@@ -298,7 +299,7 @@ function handleMessage(msg) {
         }
       } else if (messageType === 'group') {
         for (const gid of Object.keys(groupMessages.value)) {
-          const m = groupMessages.value[gid]?.find(m => m.id === messageId)
+          const m = (groupMessages.value as any)[gid]?.find((m: any) => m.id === messageId)
           if (m) { m.reactions = reactions; break }
         }
       }
@@ -307,9 +308,8 @@ function handleMessage(msg) {
   }
 }
 
-// ── Connection ───────────────────────────────────────────────────────────────
-function connect() {
-  clearTimeout(reconnectTimer)
+function connect(): void {
+  clearTimeout(reconnectTimer!)
   reconnectTimer = null
   const state = ws.value?.readyState
   if (state === WebSocket.CONNECTING || state === WebSocket.OPEN) return
@@ -338,7 +338,7 @@ function connect() {
 
 // ── Composable ───────────────────────────────────────────────────────────────
 export function useWebSocket() {
-  function join(token) {
+  function join(token: string): void {
     if (joined.value) return
     if (ws.value?.readyState === WebSocket.OPEN) {
       ws.value.send(JSON.stringify({ type: 'join', token }))
@@ -346,15 +346,15 @@ export function useWebSocket() {
     }
   }
 
-  function sendMessage(text) {
+  function sendMessage(text: string): void {
     if (ws.value?.readyState === WebSocket.OPEN && text.trim()) {
       ws.value.send(JSON.stringify({ type: 'message', text }))
     }
   }
 
-  function sendGroupMessage(groupId, text, replyTo = null, fileData = null) {
+  function sendGroupMessage(groupId: number, text: string, replyTo: ReplyTo | null = null, fileData: FileData | null = null): void {
     if (ws.value?.readyState === WebSocket.OPEN && (text.trim() || fileData)) {
-      const payload = { type: 'group_message', groupId, text: text || '' }
+      const payload: Record<string, any> = { type: 'group_message', groupId, text: text || '' }
       if (replyTo) {
         payload.reply_to_id = replyTo.id
         payload.reply_to_text = replyTo.text || replyTo.file_name || ''
@@ -370,26 +370,26 @@ export function useWebSocket() {
     }
   }
 
-  function sendTyping(isTyping) {
+  function sendTyping(isTyping: boolean): void {
     if (ws.value?.readyState === WebSocket.OPEN) {
       ws.value.send(JSON.stringify({ type: 'typing', isTyping }))
     }
   }
 
-  function sendDMTyping(toUser, isTyping) {
+  function sendDMTyping(toUser: string, isTyping: boolean): void {
     if (ws.value?.readyState === WebSocket.OPEN) {
       ws.value.send(JSON.stringify({ type: 'dm_typing', toUser, isTyping }))
     }
   }
 
-  function sendGroupTyping(groupId, isTyping) {
+  function sendGroupTyping(groupId: number, isTyping: boolean): void {
     if (ws.value?.readyState === WebSocket.OPEN) {
       ws.value.send(JSON.stringify({ type: 'group_typing', groupId, isTyping }))
     }
   }
 
-  function disconnect() {
-    clearTimeout(reconnectTimer)
+  function disconnect(): void {
+    clearTimeout(reconnectTimer!)
     reconnectTimer = null
     Object.keys(typingTimers).forEach(k => { clearTimeout(typingTimers[k]); delete typingTimers[k] })
     Object.keys(dmTypingTimers).forEach(k => { clearTimeout(dmTypingTimers[k]); delete dmTypingTimers[k] })

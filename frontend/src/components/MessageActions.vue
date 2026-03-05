@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import { Pencil, Trash2, SmilePlus, CornerUpLeft, Forward, Pin, Copy } from 'lucide-vue-next'
 

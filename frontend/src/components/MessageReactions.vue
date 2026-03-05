@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { useAuth } from '@/composables/useAuth'
 
 const props = defineProps({

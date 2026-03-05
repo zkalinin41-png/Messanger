@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import { useGroups } from '@/composables/useGroups'
 import Button from '@/components/ui/button/Button.vue'

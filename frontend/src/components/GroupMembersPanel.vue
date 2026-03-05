@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useGroups } from '@/composables/useGroups'
 import { useAuth } from '@/composables/useAuth'

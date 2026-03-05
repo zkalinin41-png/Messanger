@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { useDMs } from '@/composables/useDMs'
 import { useAuth } from '@/composables/useAuth'

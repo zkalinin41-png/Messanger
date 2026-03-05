@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useAuth } from '@/composables/useAuth'
 import Card from '@/components/ui/card/Card.vue'

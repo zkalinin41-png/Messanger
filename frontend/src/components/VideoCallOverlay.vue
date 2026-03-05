@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { Room, RoomEvent, Track } from 'livekit-client'
 import { useVideoCall, callState, callToken, callUrl, callPartner, callMode } from '@/composables/useVideoCall'

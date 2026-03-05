@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import { useAuth } from '@/composables/useAuth'
 import { Mic, Square, Loader2 } from 'lucide-vue-next'

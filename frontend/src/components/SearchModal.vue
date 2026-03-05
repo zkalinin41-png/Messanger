@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useAuth } from '@/composables/useAuth'
 import { usernameColor } from '@/utils/color'

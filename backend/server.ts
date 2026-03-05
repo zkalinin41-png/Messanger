@@ -1,7 +1,7 @@
 import 'dotenv/config'
-import express from 'express'
+import express, { type Request, type Response } from 'express'
 import { createServer } from 'http'
-import { WebSocketServer } from 'ws'
+import { WebSocketServer, WebSocket } from 'ws'
 import cors from 'cors'
 import Database from 'better-sqlite3'
 import bcrypt from 'bcryptjs'
@@ -13,12 +13,17 @@ import { randomUUID } from 'crypto'
 import { fileURLToPath } from 'url'
 import { dirname, join, extname } from 'path'
 import { existsSync, mkdirSync } from 'fs'
+import type {
+  UserRow, GroupRow, GroupMemberRow, GroupMessageRow, DMMessageRow,
+  ReactionRow, PinnedMessageRow, BlockedUserRow,
+  WsClient, ChatMessage, AggregatedReaction, AuthPayload, WsIncomingMessage,
+} from './types.js'
 
-process.on('uncaughtException', (err) => console.error('Uncaught exception:', err))
-process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err))
+process.on('uncaughtException', (err: unknown) => console.error('Uncaught exception:', err))
+process.on('unhandledRejection', (err: unknown) => console.error('Unhandled rejection:', err))
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production'
+const __dirname: string = dirname(fileURLToPath(import.meta.url))
+const JWT_SECRET: string = process.env.JWT_SECRET || 'change-this-secret-in-production'
 
 // ── File uploads ─────────────────────────────────────────────────────────────
 const uploadsDir = join(__dirname, 'uploads')
@@ -26,33 +31,33 @@ if (!existsSync(uploadsDir)) mkdirSync(uploadsDir)
 
 const upload = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadsDir),
-    filename: (req, file, cb) => cb(null, `${randomUUID()}${extname(file.originalname).toLowerCase()}`),
+    destination: (_req: any, _file: any, cb: any) => cb(null, uploadsDir),
+    filename: (_req: any, file: any, cb: any) => cb(null, `${randomUUID()}${extname(file.originalname).toLowerCase()}`),
   }),
   limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
 })
 // APP_URL is determined from the request Origin header at runtime so it works
 // regardless of which port Vite picks. Falls back to env var or localhost:5173.
-const APP_URL_FALLBACK = process.env.APP_URL || 'http://localhost:5173'
+const APP_URL_FALLBACK: string = process.env.APP_URL || 'http://localhost:5173'
 
-function getAppUrl(req) {
+function getAppUrl(req: Request): string {
   const origin = req.headers.origin
   if (origin && origin.startsWith('http://localhost')) return origin
   return APP_URL_FALLBACK
 }
 
-function getAuth(req) {
+function getAuth(req: Request): AuthPayload | null {
   const h = req.headers.authorization
   if (!h?.startsWith('Bearer ')) return null
-  try { return jwt.verify(h.slice(7), JWT_SECRET) } catch { return null }
+  try { return jwt.verify(h.slice(7), JWT_SECRET) as AuthPayload } catch { return null }
 }
 
-const COLORS = [
+const COLORS: string[] = [
   '#6366f1', '#8b5cf6', '#ec4899', '#14b8a6',
   '#f59e0b', '#10b981', '#3b82f6', '#f97316',
 ]
 
-function usernameColor(username) {
+function usernameColor(username: string): string {
   let h = 0
   for (const ch of username) h = (h * 31 + ch.charCodeAt(0)) & 0xffff
   return COLORS[h % COLORS.length]
@@ -60,7 +65,7 @@ function usernameColor(username) {
 
 // isOnline references `clients` which is initialized in the WebSocket section
 // before any HTTP request can arrive, so this is safe at call time.
-function isOnline(username) {
+function isOnline(username: string): boolean {
   for (const [, c] of clients) {
     if (c.username === username) return true
   }
@@ -68,7 +73,7 @@ function isOnline(username) {
 }
 
 // --- Database setup ---
-const db = new Database(join(__dirname, 'chat.db'))
+const db: Database.Database = new Database(join(__dirname, 'chat.db'))
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -80,7 +85,7 @@ db.exec(`
 `)
 
 // Safe migrations — only add columns that don't exist yet
-const existingCols = new Set(db.prepare('PRAGMA table_info(users)').all().map(c => c.name))
+const existingCols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c: any) => c.name))
 if (!existingCols.has('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT')
 if (!existingCols.has('email_verified')) db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0')
 if (!existingCols.has('verification_token')) db.exec('ALTER TABLE users ADD COLUMN verification_token TEXT')
@@ -122,7 +127,7 @@ if (!existingCols.has('last_seen_at')) db.exec('ALTER TABLE users ADD COLUMN las
 if (!existingCols.has('avatar_url')) db.exec('ALTER TABLE users ADD COLUMN avatar_url TEXT')
 
 // group_messages: reply columns + file columns
-const gmCols = new Set(db.prepare('PRAGMA table_info(group_messages)').all().map(c => c.name))
+const gmCols = new Set(db.prepare('PRAGMA table_info(group_messages)').all().map((c: any) => c.name))
 if (!gmCols.has('reply_to_id')) db.exec('ALTER TABLE group_messages ADD COLUMN reply_to_id INTEGER')
 if (!gmCols.has('reply_to_text')) db.exec('ALTER TABLE group_messages ADD COLUMN reply_to_text TEXT')
 if (!gmCols.has('reply_to_username')) db.exec('ALTER TABLE group_messages ADD COLUMN reply_to_username TEXT')
@@ -148,7 +153,7 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_dm_pair ON dm_messages (from_user, to_us
 db.exec('CREATE INDEX IF NOT EXISTS idx_dm_to ON dm_messages (to_user, status)')
 
 // dm_messages: file columns + edit/delete
-const dmCols = new Set(db.prepare('PRAGMA table_info(dm_messages)').all().map(c => c.name))
+const dmCols = new Set(db.prepare('PRAGMA table_info(dm_messages)').all().map((c: any) => c.name))
 if (!dmCols.has('file_url')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_url TEXT')
 if (!dmCols.has('file_name')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_name TEXT')
 if (!dmCols.has('file_type')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_type TEXT')
@@ -198,9 +203,9 @@ db.exec(`
 `)
 
 // --- Nodemailer (Ethereal dev account, lazy-initialized) ---
-let _transporter = null
+let _transporter: nodemailer.Transporter | null = null
 
-async function getTransporter() {
+async function getTransporter(): Promise<nodemailer.Transporter> {
   if (_transporter) return _transporter
   const account = await nodemailer.createTestAccount()
   _transporter = nodemailer.createTransport({
@@ -215,7 +220,7 @@ async function getTransporter() {
   return _transporter
 }
 
-async function sendMail(to, subject, html) {
+async function sendMail(to: string, subject: string, html: string): Promise<void> {
   const t = await getTransporter()
   const info = await t.sendMail({
     from: '"Chat App" <noreply@chatapp.dev>',
@@ -226,7 +231,7 @@ async function sendMail(to, subject, html) {
   console.log(`📨 Email preview: ${nodemailer.getTestMessageUrl(info)}`)
 }
 
-function verificationEmailHtml(username, verifyUrl) {
+function verificationEmailHtml(username: string, verifyUrl: string): string {
   return `
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px">
       <h2 style="margin:0 0 8px">Welcome, ${username}!</h2>
@@ -245,7 +250,7 @@ function verificationEmailHtml(username, verifyUrl) {
   `
 }
 
-function resetEmailHtml(username, resetUrl) {
+function resetEmailHtml(username: string, resetUrl: string): string {
   return `
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px">
       <h2 style="margin:0 0 8px">Password reset</h2>
@@ -264,7 +269,7 @@ function resetEmailHtml(username, resetUrl) {
   `
 }
 
-function simpleHtmlPage(title, heading, body, appUrl = APP_URL_FALLBACK) {
+function simpleHtmlPage(title: string, heading: string, body: string, appUrl: string = APP_URL_FALLBACK): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -305,7 +310,7 @@ if (existsSync(distDir)) {
 }
 
 // Register
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', async (req: Request, res: Response) => {
   const { username, email, password } = req.body
 
   if (!username || !email || !password) {
@@ -349,7 +354,7 @@ app.post('/api/register', async (req, res) => {
       INSERT INTO users (username, email, password_hash, verification_token, verification_expires)
       VALUES (?, ?, ?, ?, ?)
     `).run(name, mail, hash, token, expires)
-  } catch (err) {
+  } catch (err: any) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
       return res.status(409).json({ error: 'Username already taken' })
     }
@@ -359,7 +364,7 @@ app.post('/api/register', async (req, res) => {
   const verifyUrl = `${req.protocol}://${req.get('host')}/api/verify-email?token=${token}`
   try {
     await sendMail(mail, 'Verify your email address', verificationEmailHtml(name, verifyUrl))
-  } catch (e) {
+  } catch (e: any) {
     console.error('Email send failed:', e.message)
   }
 
@@ -367,7 +372,7 @@ app.post('/api/register', async (req, res) => {
 })
 
 // Verify email (link from email)
-app.get('/api/verify-email', (req, res) => {
+app.get('/api/verify-email', (req: Request, res: Response) => {
   const { token } = req.query
   const appUrl = getAppUrl(req)
   if (!token) return res.send(simpleHtmlPage('Error', 'Invalid link', 'This verification link is not valid.', appUrl))
@@ -387,7 +392,7 @@ app.get('/api/verify-email', (req, res) => {
 })
 
 // Resend verification email
-app.post('/api/resend-verification', async (req, res) => {
+app.post('/api/resend-verification', async (req: Request, res: Response) => {
   const mail = String(req.body.email || '').trim().toLowerCase()
   if (!mail) return res.status(400).json({ error: 'Email is required' })
 
@@ -402,7 +407,7 @@ app.post('/api/resend-verification', async (req, res) => {
   const verifyUrl = `${req.protocol}://${req.get('host')}/api/verify-email?token=${token}`
   try {
     await sendMail(mail, 'Verify your email address', verificationEmailHtml(user.username, verifyUrl))
-  } catch (e) {
+  } catch (e: any) {
     console.error('Email send failed:', e.message)
   }
 
@@ -410,7 +415,7 @@ app.post('/api/resend-verification', async (req, res) => {
 })
 
 // Forgot password
-app.post('/api/forgot-password', async (req, res) => {
+app.post('/api/forgot-password', async (req: Request, res: Response) => {
   const mail = String(req.body.email || '').trim().toLowerCase()
   // Always return same message to avoid leaking which emails exist
   const generic = { message: 'If that email is registered, a reset link is on its way.' }
@@ -427,7 +432,7 @@ app.post('/api/forgot-password', async (req, res) => {
   const resetUrl = `${getAppUrl(req)}?reset_token=${token}`
   try {
     await sendMail(mail, 'Reset your password', resetEmailHtml(user.username, resetUrl))
-  } catch (e) {
+  } catch (e: any) {
     console.error('Email send failed:', e.message)
   }
 
@@ -435,7 +440,7 @@ app.post('/api/forgot-password', async (req, res) => {
 })
 
 // Reset password
-app.post('/api/reset-password', (req, res) => {
+app.post('/api/reset-password', (req: Request, res: Response) => {
   const { token, newPassword } = req.body
   if (!token || !newPassword) {
     return res.status(400).json({ error: 'Token and new password are required' })
@@ -455,7 +460,7 @@ app.post('/api/reset-password', (req, res) => {
 })
 
 // Change password
-app.post('/api/change-password', (req, res) => {
+app.post('/api/change-password', (req: Request, res: Response) => {
   const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' })
@@ -484,7 +489,7 @@ app.post('/api/change-password', (req, res) => {
 })
 
 // Video call token
-app.post('/api/video/token', async (req, res) => {
+app.post('/api/video/token', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = String(req.body.partner || '').trim()
@@ -502,7 +507,7 @@ app.post('/api/video/token', async (req, res) => {
 })
 
 // File upload
-app.post('/api/upload', upload.single('file'), (req, res) => {
+app.post('/api/upload', upload.single('file'), (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   if (!req.file) return res.status(400).json({ error: 'No file provided' })
@@ -515,14 +520,14 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 })
 
 // Login
-app.get('/api/check-username', (req, res) => {
+app.get('/api/check-username', (req: Request, res: Response) => {
   const name = String(req.query.u || '').trim()
   if (name.length < 2) return res.json({ available: false })
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(name)
   res.json({ available: !exists })
 })
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', (req: Request, res: Response) => {
   const { username, password } = req.body
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' })
@@ -549,7 +554,7 @@ app.post('/api/login', (req, res) => {
 
 // ── Group REST API ──
 
-app.get('/api/groups', (req, res) => {
+app.get('/api/groups', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const rows = db.prepare(`
@@ -565,7 +570,7 @@ app.get('/api/groups', (req, res) => {
   res.json({ groups: rows })
 })
 
-app.post('/api/groups', (req, res) => {
+app.post('/api/groups', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const name = String(req.body.name || '').trim()
@@ -581,7 +586,7 @@ app.post('/api/groups', (req, res) => {
   res.json({ group: { id: groupId, name, description, creator: auth.username, role: 'admin', unread_count: 0, member_count: 1, created_at: now } })
 })
 
-app.get('/api/groups/:id', (req, res) => {
+app.get('/api/groups/:id', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -595,7 +600,7 @@ app.get('/api/groups/:id', (req, res) => {
   res.json({ group: { ...group, role: membership.role }, members })
 })
 
-app.put('/api/groups/:id', (req, res) => {
+app.put('/api/groups/:id', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -610,7 +615,7 @@ app.put('/api/groups/:id', (req, res) => {
   res.json({ message: 'Updated' })
 })
 
-app.delete('/api/groups/:id', (req, res) => {
+app.delete('/api/groups/:id', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -623,7 +628,7 @@ app.delete('/api/groups/:id', (req, res) => {
   res.json({ message: 'Group deleted' })
 })
 
-app.get('/api/groups/:id/messages', (req, res) => {
+app.get('/api/groups/:id/messages', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -631,10 +636,10 @@ app.get('/api/groups/:id/messages', (req, res) => {
   if (!membership) return res.status(403).json({ error: 'Not a member' })
   const msgs = db.prepare('SELECT * FROM group_messages WHERE group_id = ? ORDER BY timestamp ASC').all(groupId)
   db.prepare('UPDATE group_members SET last_seen_at = ? WHERE group_id = ? AND username = ?').run(Date.now(), groupId, auth.username)
-  res.json({ messages: msgs.map(m => ({ ...m, color: usernameColor(m.username), reactions: getReactions(m.id, 'group') })) })
+  res.json({ messages: msgs.map((m: any) => ({ ...m, color: usernameColor(m.username), reactions: getReactions(m.id, 'group') })) })
 })
 
-app.post('/api/groups/:id/members', (req, res) => {
+app.post('/api/groups/:id/members', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -654,7 +659,7 @@ app.post('/api/groups/:id/members', (req, res) => {
   res.json({ message: `${target.username} added` })
 })
 
-app.delete('/api/groups/:id/members/:username', (req, res) => {
+app.delete('/api/groups/:id/members/:username', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -673,7 +678,7 @@ app.delete('/api/groups/:id/members/:username', (req, res) => {
   res.json({ message: `${targetName} removed` })
 })
 
-app.delete('/api/groups/:id/leave', (req, res) => {
+app.delete('/api/groups/:id/leave', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -685,7 +690,7 @@ app.delete('/api/groups/:id/leave', (req, res) => {
   res.json({ message: 'You left the group' })
 })
 
-app.put('/api/groups/:id/members/:username/role', (req, res) => {
+app.put('/api/groups/:id/members/:username/role', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -706,7 +711,7 @@ app.put('/api/groups/:id/members/:username/role', (req, res) => {
 
 // ── DM REST API ──
 
-app.get('/api/users/search', (req, res) => {
+app.get('/api/users/search', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const q = String(req.query.q || '').trim()
@@ -715,7 +720,7 @@ app.get('/api/users/search', (req, res) => {
     SELECT username FROM users
     WHERE username LIKE ? AND username != ? AND email_verified = 1
     LIMIT 10
-  `).all(`%${q}%`, auth.username).map(u => ({
+  `).all(`%${q}%`, auth.username).map((u: any) => ({
     username: u.username,
     color: usernameColor(u.username),
     online: isOnline(u.username),
@@ -723,14 +728,14 @@ app.get('/api/users/search', (req, res) => {
   res.json({ users })
 })
 
-app.get('/api/dms', (req, res) => {
+app.get('/api/dms', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partners = db.prepare(`
     SELECT DISTINCT CASE WHEN from_user = ? THEN to_user ELSE from_user END AS partner
     FROM dm_messages WHERE from_user = ? OR to_user = ?
-  `).all(auth.username, auth.username, auth.username).map(r => r.partner)
-  const conversations = partners.map(partner => {
+  `).all(auth.username, auth.username, auth.username).map((r: any) => r.partner)
+  const conversations = partners.map((partner: any) => {
     const last = db.prepare(`
       SELECT text, timestamp FROM dm_messages
       WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)
@@ -749,11 +754,11 @@ app.get('/api/dms', (req, res) => {
       online: isOnline(partner),
       last_seen_at: user?.last_seen_at ?? null,
     }
-  }).sort((a, b) => b.last_timestamp - a.last_timestamp)
+  }).sort((a: any, b: any) => b.last_timestamp - a.last_timestamp)
   res.json({ conversations })
 })
 
-app.get('/api/dms/:username', (req, res) => {
+app.get('/api/dms/:username', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = req.params.username
@@ -765,19 +770,19 @@ app.get('/api/dms/:username', (req, res) => {
     ORDER BY timestamp ASC
   `).all(auth.username, partner, partner, auth.username)
   // Mark partner's unread messages to me as read
-  const unreadIds = msgs.filter(m => m.from_user === partner && m.status !== 'read').map(m => m.id)
+  const unreadIds = msgs.filter((m: any) => m.from_user === partner && m.status !== 'read').map((m: any) => m.id)
   if (unreadIds.length > 0) {
     db.prepare(`UPDATE dm_messages SET status = 'read' WHERE id IN (${unreadIds.map(() => '?').join(',')})`).run(...unreadIds)
     sendToUser(partner, { type: 'dm_read', byUser: auth.username })
   }
   res.json({
-    messages: msgs.map(m => ({ ...m, color: usernameColor(m.from_user), reactions: getReactions(m.id, 'dm') })),
+    messages: msgs.map((m: any) => ({ ...m, color: usernameColor(m.from_user), reactions: getReactions(m.id, 'dm') })),
     partner_online: isOnline(partner),
     partner_last_seen: target.last_seen_at,
   })
 })
 
-app.post('/api/dms/:username', (req, res) => {
+app.post('/api/dms/:username', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = req.params.username
@@ -823,7 +828,7 @@ app.post('/api/dms/:username', (req, res) => {
 
 // ── User Profile & Avatar ─────────────────────────────────────────────────────
 
-app.get('/api/users/:username', (req, res) => {
+app.get('/api/users/:username', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const user = db.prepare('SELECT username, avatar_url, last_seen_at, created_at FROM users WHERE username = ?').get(req.params.username)
@@ -831,7 +836,7 @@ app.get('/api/users/:username', (req, res) => {
   res.json({ user: { ...user, online: isOnline(user.username) } })
 })
 
-app.post('/api/avatar', upload.single('avatar'), (req, res) => {
+app.post('/api/avatar', upload.single('avatar'), (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   if (!req.file) return res.status(400).json({ error: 'No file' })
@@ -842,7 +847,7 @@ app.post('/api/avatar', upload.single('avatar'), (req, res) => {
 
 // ── Message Search ────────────────────────────────────────────────────────────
 
-app.get('/api/search/messages', (req, res) => {
+app.get('/api/search/messages', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const q = String(req.query.q || '').trim()
@@ -854,14 +859,14 @@ app.get('/api/search/messages', (req, res) => {
     FROM dm_messages
     WHERE deleted = 0 AND text LIKE ? AND (from_user = ? OR to_user = ?)
     ORDER BY timestamp DESC LIMIT 20
-  `).all(like, auth.username, auth.username).map(r => ({
+  `).all(like, auth.username, auth.username).map((r: any) => ({
     ...r,
     partner: r.from_user === auth.username ? r.to_user : r.from_user,
     color: usernameColor(r.from_user),
   }))
   // Search group messages
-  const myGroups = db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username).map(r => r.group_id)
-  let groupResults = []
+  const myGroups = db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username).map((r: any) => r.group_id)
+  let groupResults: any[] = []
   if (myGroups.length > 0) {
     groupResults = db.prepare(`
       SELECT gm.id, gm.username as from_user, gm.text, gm.timestamp, gm.group_id,
@@ -870,7 +875,7 @@ app.get('/api/search/messages', (req, res) => {
       JOIN chat_groups cg ON cg.id = gm.group_id
       WHERE gm.deleted = 0 AND gm.text LIKE ? AND gm.group_id IN (${myGroups.map(() => '?').join(',')})
       ORDER BY gm.timestamp DESC LIMIT 20
-    `).all(like, ...myGroups).map(r => ({
+    `).all(like, ...myGroups).map((r: any) => ({
       ...r,
       color: usernameColor(r.from_user),
     }))
@@ -879,7 +884,7 @@ app.get('/api/search/messages', (req, res) => {
 })
 // ── Conversation Clear ──────────────────────────────────────────────────────
 
-app.delete('/api/dm/:partner', (req, res) => {
+app.delete('/api/dm/:partner', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = req.params.partner
@@ -890,7 +895,7 @@ app.delete('/api/dm/:partner', (req, res) => {
 
 // ── Media Gallery ───────────────────────────────────────────────────────────
 
-app.get('/api/media/dm/:partner', (req, res) => {
+app.get('/api/media/dm/:partner', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = req.params.partner
@@ -904,7 +909,7 @@ app.get('/api/media/dm/:partner', (req, res) => {
   res.json({ files })
 })
 
-app.get('/api/media/group/:id', (req, res) => {
+app.get('/api/media/group/:id', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -922,7 +927,7 @@ app.get('/api/media/group/:id', (req, res) => {
 
 // ── Pinned Messages API ─────────────────────────────────────────────────────
 
-app.post('/api/groups/:id/pins/:msgId', (req, res) => {
+app.post('/api/groups/:id/pins/:msgId', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -937,7 +942,7 @@ app.post('/api/groups/:id/pins/:msgId', (req, res) => {
   res.json({ message: 'Pinned' })
 })
 
-app.delete('/api/groups/:id/pins/:msgId', (req, res) => {
+app.delete('/api/groups/:id/pins/:msgId', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -950,7 +955,7 @@ app.delete('/api/groups/:id/pins/:msgId', (req, res) => {
   res.json({ message: 'Unpinned' })
 })
 
-app.get('/api/groups/:id/pins', (req, res) => {
+app.get('/api/groups/:id/pins', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -963,13 +968,13 @@ app.get('/api/groups/:id/pins', (req, res) => {
     JOIN group_messages gm ON gm.id = pm.message_id
     WHERE pm.group_id = ? AND gm.deleted = 0
     ORDER BY pm.pinned_at DESC
-  `).all(groupId).map(p => ({ ...p, color: usernameColor(p.username) }))
+  `).all(groupId).map((p: any) => ({ ...p, color: usernameColor(p.username) }))
   res.json({ pins })
 })
 
 // ── Contact Blocking API ────────────────────────────────────────────────────
 
-app.post('/api/block/:username', (req, res) => {
+app.post('/api/block/:username', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const blocked = req.params.username
@@ -978,14 +983,14 @@ app.post('/api/block/:username', (req, res) => {
   res.json({ message: 'Blocked' })
 })
 
-app.delete('/api/block/:username', (req, res) => {
+app.delete('/api/block/:username', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   db.prepare('DELETE FROM blocked_users WHERE blocker = ? AND blocked = ?').run(auth.username, req.params.username)
   res.json({ message: 'Unblocked' })
 })
 
-app.get('/api/blocked', (req, res) => {
+app.get('/api/blocked', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const blocked = db.prepare('SELECT blocked, created_at FROM blocked_users WHERE blocker = ?').all(auth.username)
@@ -994,7 +999,7 @@ app.get('/api/blocked', (req, res) => {
 
 // ── Message Forwarding API ──────────────────────────────────────────────────
 
-app.post('/api/forward', (req, res) => {
+app.post('/api/forward', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const { messageId, messageType, toPartner, toGroupId } = req.body
@@ -1057,12 +1062,12 @@ app.post('/api/forward', (req, res) => {
 // ── Message Edit / Delete / Reactions API ─────────────────────────────────────
 
 // Helper: get reactions for a message
-function getReactions(messageId, messageType) {
-  return db.prepare('SELECT emoji, GROUP_CONCAT(username) as users FROM message_reactions WHERE message_id = ? AND message_type = ? GROUP BY emoji').all(messageId, messageType).map(r => ({ emoji: r.emoji, users: r.users.split(',') }))
+function getReactions(messageId: number, messageType: string): AggregatedReaction[] {
+  return db.prepare('SELECT emoji, GROUP_CONCAT(username) as users FROM message_reactions WHERE message_id = ? AND message_type = ? GROUP BY emoji').all(messageId, messageType).map((r: any) => ({ emoji: r.emoji, users: r.users.split(',') }))
 }
 
 // Edit DM message
-app.put('/api/dms/:partner/messages/:id', (req, res) => {
+app.put('/api/dms/:partner/messages/:id', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const msgId = Number(req.params.id)
@@ -1081,7 +1086,7 @@ app.put('/api/dms/:partner/messages/:id', (req, res) => {
 })
 
 // Delete DM message
-app.delete('/api/dms/:partner/messages/:id', (req, res) => {
+app.delete('/api/dms/:partner/messages/:id', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const msgId = Number(req.params.id)
@@ -1097,7 +1102,7 @@ app.delete('/api/dms/:partner/messages/:id', (req, res) => {
 })
 
 // Edit group message
-app.put('/api/groups/:id/messages/:msgId', (req, res) => {
+app.put('/api/groups/:id/messages/:msgId', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -1117,7 +1122,7 @@ app.put('/api/groups/:id/messages/:msgId', (req, res) => {
 })
 
 // Delete group message
-app.delete('/api/groups/:id/messages/:msgId', (req, res) => {
+app.delete('/api/groups/:id/messages/:msgId', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
@@ -1138,7 +1143,7 @@ app.delete('/api/groups/:id/messages/:msgId', (req, res) => {
 })
 
 // Add/toggle reaction
-app.post('/api/reactions', (req, res) => {
+app.post('/api/reactions', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const { messageId, messageType, emoji } = req.body
@@ -1168,7 +1173,7 @@ app.post('/api/reactions', (req, res) => {
 })
 
 // Get reactions for a message
-app.get('/api/reactions/:messageType/:messageId', (req, res) => {
+app.get('/api/reactions/:messageType/:messageId', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const reactions = getReactions(Number(req.params.messageId), req.params.messageType)
@@ -1179,43 +1184,43 @@ app.get('/api/reactions/:messageType/:messageId', (req, res) => {
 const server = createServer(app)
 const wss = new WebSocketServer({ server, path: '/ws' })
 
-const messages = []
-const clients = new Map()
+const messages: ChatMessage[] = []
+const clients = new Map<WebSocket, WsClient>()
 
 let colorIndex = 0
 
-function broadcastAll(data) {
+function broadcastAll(data: Record<string, unknown>): void {
   const json = JSON.stringify(data)
   for (const [ws] of clients) {
-    if (ws.readyState === 1) ws.send(json)
+    if (ws.readyState === WebSocket.OPEN) ws.send(json)
   }
 }
 
-function sendToUser(username, data) {
+function sendToUser(username: string, data: Record<string, unknown>): void {
   const json = JSON.stringify(data)
   for (const [ws, client] of clients) {
-    if (client.username === username && ws.readyState === 1) ws.send(json)
+    if (client.username === username && ws.readyState === WebSocket.OPEN) ws.send(json)
   }
 }
 
-function broadcastToGroup(groupId, data) {
+function broadcastToGroup(groupId: number, data: Record<string, unknown>): void {
   const members = new Set(
-    db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId).map(m => m.username)
+    db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId).map((m: any) => m.username)
   )
   const json = JSON.stringify(data)
   for (const [ws, client] of clients) {
-    if (members.has(client.username) && ws.readyState === 1) ws.send(json)
+    if (members.has(client.username) && ws.readyState === WebSocket.OPEN) ws.send(json)
   }
 }
 
-function getOnlineUsers() {
+function getOnlineUsers(): { username: string; color: string }[] {
   return [...clients.values()].map(c => ({ username: c.username, color: c.color }))
 }
 
-wss.on('connection', (ws) => {
-  ws.on('message', (raw) => {
-    let msg
-    try { msg = JSON.parse(raw) } catch { return }
+wss.on('connection', (ws: WebSocket) => {
+  ws.on('message', (raw: Buffer) => {
+    let msg: WsIncomingMessage
+    try { msg = JSON.parse(raw.toString()) } catch { return }
     try { handleWsMessage(ws, msg) } catch (err) { console.error('WS handler error:', err) }
   })
 
@@ -1238,7 +1243,7 @@ wss.on('connection', (ws) => {
   })
 })
 
-function handleWsMessage(ws, msg) {
+function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
 
   if (msg.type === 'join') {
     let payload
@@ -1267,10 +1272,10 @@ function handleWsMessage(ws, msg) {
     const senders = db.prepare(
       "SELECT DISTINCT from_user FROM dm_messages WHERE to_user = ? AND status = 'sent'"
     ).all(username)
-    for (const { from_user } of senders) {
+    for (const { from_user } of senders as { from_user: string }[]) {
       const ids = db.prepare(
         "SELECT id FROM dm_messages WHERE from_user = ? AND to_user = ? AND status = 'sent'"
-      ).all(from_user, username).map(r => r.id)
+      ).all(from_user, username).map((r: any) => r.id)
       if (ids.length) {
         db.prepare(`UPDATE dm_messages SET status = 'delivered' WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids)
         sendToUser(from_user, { type: 'dm_delivered', byUser: username, ids })
@@ -1344,8 +1349,8 @@ function handleWsMessage(ws, msg) {
 
   if (['call_invite', 'call_accept', 'call_reject', 'call_end'].includes(msg.type)) {
     const client = clients.get(ws)
-    if (!client || !msg.toUser) return
-    sendToUser(msg.toUser, { type: msg.type, fromUser: client.username, callMode: msg.callMode })
+    if (!client || !(msg as any).toUser) return
+    sendToUser((msg as any).toUser, { type: msg.type, fromUser: client.username, callMode: (msg as any).callMode })
   }
 
   if (msg.type === 'dm_typing') {
@@ -1360,7 +1365,7 @@ function handleWsMessage(ws, msg) {
     const groupId = Number(msg.groupId)
     if (!groupId) return
     if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, client.username)) return
-    const members = new Set(db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId).map(m => m.username))
+    const members = new Set(db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId).map((m: any) => m.username))
     const json = JSON.stringify({ type: 'group_typing', groupId, username: client.username, isTyping: msg.isTyping !== false })
     for (const [cws, cclient] of clients) {
       if (cclient.username !== client.username && members.has(cclient.username) && cws.readyState === 1) cws.send(json)
@@ -1370,7 +1375,7 @@ function handleWsMessage(ws, msg) {
 
 // SPA fallback — must come after all API routes
 if (existsSync(distDir)) {
-  app.get('*', (_, res) => res.sendFile(join(distDir, 'index.html')))
+  app.get('*', (_: Request, res: Response) => res.sendFile(join(distDir, 'index.html')))
 }
 
 const PORT = process.env.PORT || 3001
