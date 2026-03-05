@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import { groups, groupMessages, groupMembers, activeGroupId } from './useGroups'
 import { conversations, dmMessages, activeDMPartner } from './useDMs'
 import { useAuth } from './useAuth'
-import { callState, callPartner, callToken, callUrl, fetchVideoToken, setWsSender } from './useVideoCall'
+import { callState, callPartner, callToken, callUrl, callMode, fetchVideoToken, setWsSender } from './useVideoCall'
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 const { username } = useAuth()
@@ -56,6 +56,10 @@ function handleMessage(msg) {
 
     case 'users':
       onlineUsers.value = msg.users
+      // Initialize onlineStatuses for all currently online users
+      for (const u of msg.users) {
+        onlineStatuses.value[u.username] = { online: true, lastSeen: null }
+      }
       break
 
     case 'error':
@@ -215,6 +219,7 @@ function handleMessage(msg) {
     case 'call_invite':
       callState.value = 'incoming'
       callPartner.value = msg.fromUser
+      callMode.value = msg.callMode || 'video'
       break
 
     case 'call_accept':
@@ -241,6 +246,64 @@ function handleMessage(msg) {
       callToken.value = null
       callUrl.value = null
       break
+
+    case 'dm_edited': {
+      const { messageId, text, partner } = msg
+      const p = partner === username.value ? msg.partner : partner
+      const msgs = dmMessages.value[p]
+      if (msgs) {
+        const m = msgs.find(m => m.id === messageId)
+        if (m) { m.text = text; m.edited = 1 }
+      }
+      break
+    }
+
+    case 'dm_deleted': {
+      const { messageId, partner } = msg
+      const p = partner === username.value ? msg.partner : partner
+      const msgs = dmMessages.value[p]
+      if (msgs) {
+        const m = msgs.find(m => m.id === messageId)
+        if (m) { m.deleted = 1; m.text = ''; m.file_url = null }
+      }
+      break
+    }
+
+    case 'group_msg_edited': {
+      const { groupId: gid, messageId, text } = msg
+      const msgs = groupMessages.value[Number(gid)]
+      if (msgs) {
+        const m = msgs.find(m => m.id === messageId)
+        if (m) { m.text = text; m.edited = 1 }
+      }
+      break
+    }
+
+    case 'group_msg_deleted': {
+      const { groupId: gid, messageId } = msg
+      const msgs = groupMessages.value[Number(gid)]
+      if (msgs) {
+        const m = msgs.find(m => m.id === messageId)
+        if (m) { m.deleted = 1; m.text = ''; m.file_url = null }
+      }
+      break
+    }
+
+    case 'reaction_update': {
+      const { messageId, messageType, reactions } = msg
+      if (messageType === 'dm') {
+        for (const partner of Object.keys(dmMessages.value)) {
+          const m = dmMessages.value[partner]?.find(m => m.id === messageId)
+          if (m) { m.reactions = reactions; break }
+        }
+      } else if (messageType === 'group') {
+        for (const gid of Object.keys(groupMessages.value)) {
+          const m = groupMessages.value[gid]?.find(m => m.id === messageId)
+          if (m) { m.reactions = reactions; break }
+        }
+      }
+      break
+    }
   }
 }
 

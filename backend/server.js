@@ -117,8 +117,9 @@ db.exec(`
   )`)
 db.exec('PRAGMA foreign_keys = ON')
 
-// users: last_seen_at
+// users: last_seen_at + avatar
 if (!existingCols.has('last_seen_at')) db.exec('ALTER TABLE users ADD COLUMN last_seen_at INTEGER')
+if (!existingCols.has('avatar_url')) db.exec('ALTER TABLE users ADD COLUMN avatar_url TEXT')
 
 // group_messages: reply columns + file columns
 const gmCols = new Set(db.prepare('PRAGMA table_info(group_messages)').all().map(c => c.name))
@@ -146,12 +147,55 @@ db.exec(`
 db.exec('CREATE INDEX IF NOT EXISTS idx_dm_pair ON dm_messages (from_user, to_user, timestamp)')
 db.exec('CREATE INDEX IF NOT EXISTS idx_dm_to ON dm_messages (to_user, status)')
 
-// dm_messages: file columns
+// dm_messages: file columns + edit/delete
 const dmCols = new Set(db.prepare('PRAGMA table_info(dm_messages)').all().map(c => c.name))
 if (!dmCols.has('file_url')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_url TEXT')
 if (!dmCols.has('file_name')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_name TEXT')
 if (!dmCols.has('file_type')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_type TEXT')
 if (!dmCols.has('file_size')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_size INTEGER')
+if (!dmCols.has('edited')) db.exec('ALTER TABLE dm_messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0')
+if (!dmCols.has('deleted')) db.exec('ALTER TABLE dm_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0')
+
+// group_messages: edit/delete columns
+if (!gmCols.has('edited')) db.exec('ALTER TABLE group_messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0')
+if (!gmCols.has('deleted')) db.exec('ALTER TABLE group_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0')
+
+// Reactions table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS message_reactions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id  INTEGER NOT NULL,
+    message_type TEXT NOT NULL,
+    username    TEXT NOT NULL,
+    emoji       TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    UNIQUE(message_id, message_type, username, emoji)
+  )
+`)
+db.exec('CREATE INDEX IF NOT EXISTS idx_reactions ON message_reactions (message_id, message_type)')
+
+// Pinned messages table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pinned_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id    INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,
+    pinned_by   TEXT NOT NULL,
+    pinned_at   INTEGER NOT NULL,
+    UNIQUE(group_id, message_id)
+  )
+`)
+
+// Blocked users table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS blocked_users (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    blocker     TEXT NOT NULL,
+    blocked     TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    UNIQUE(blocker, blocked)
+  )
+`)
 
 // --- Nodemailer (Ethereal dev account, lazy-initialized) ---
 let _transporter = null
@@ -587,7 +631,7 @@ app.get('/api/groups/:id/messages', (req, res) => {
   if (!membership) return res.status(403).json({ error: 'Not a member' })
   const msgs = db.prepare('SELECT * FROM group_messages WHERE group_id = ? ORDER BY timestamp ASC').all(groupId)
   db.prepare('UPDATE group_members SET last_seen_at = ? WHERE group_id = ? AND username = ?').run(Date.now(), groupId, auth.username)
-  res.json({ messages: msgs.map(m => ({ ...m, color: usernameColor(m.username) })) })
+  res.json({ messages: msgs.map(m => ({ ...m, color: usernameColor(m.username), reactions: getReactions(m.id, 'group') })) })
 })
 
 app.post('/api/groups/:id/members', (req, res) => {
@@ -727,7 +771,7 @@ app.get('/api/dms/:username', (req, res) => {
     sendToUser(partner, { type: 'dm_read', byUser: auth.username })
   }
   res.json({
-    messages: msgs.map(m => ({ ...m, color: usernameColor(m.from_user) })),
+    messages: msgs.map(m => ({ ...m, color: usernameColor(m.from_user), reactions: getReactions(m.id, 'dm') })),
     partner_online: isOnline(partner),
     partner_last_seen: target.last_seen_at,
   })
@@ -775,6 +819,360 @@ app.post('/api/dms/:username', (req, res) => {
   sendToUser(partner, { type: 'dm_message', data })
   sendToUser(auth.username, { type: 'dm_message', data })
   res.json({ message: data })
+})
+
+// ── User Profile & Avatar ─────────────────────────────────────────────────────
+
+app.get('/api/users/:username', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const user = db.prepare('SELECT username, avatar_url, last_seen_at, created_at FROM users WHERE username = ?').get(req.params.username)
+  if (!user) return res.status(404).json({ error: 'User not found' })
+  res.json({ user: { ...user, online: isOnline(user.username) } })
+})
+
+app.post('/api/avatar', upload.single('avatar'), (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  if (!req.file) return res.status(400).json({ error: 'No file' })
+  const url = `/uploads/${req.file.filename}`
+  db.prepare('UPDATE users SET avatar_url = ? WHERE username = ?').run(url, auth.username)
+  res.json({ avatar_url: url })
+})
+
+// ── Message Search ────────────────────────────────────────────────────────────
+
+app.get('/api/search/messages', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const q = String(req.query.q || '').trim()
+  if (!q || q.length < 2) return res.json({ results: [] })
+  const like = `%${q}%`
+  // Search DMs
+  const dmResults = db.prepare(`
+    SELECT id, from_user, to_user, text, timestamp, 'dm' as source_type
+    FROM dm_messages
+    WHERE deleted = 0 AND text LIKE ? AND (from_user = ? OR to_user = ?)
+    ORDER BY timestamp DESC LIMIT 20
+  `).all(like, auth.username, auth.username).map(r => ({
+    ...r,
+    partner: r.from_user === auth.username ? r.to_user : r.from_user,
+    color: usernameColor(r.from_user),
+  }))
+  // Search group messages
+  const myGroups = db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username).map(r => r.group_id)
+  let groupResults = []
+  if (myGroups.length > 0) {
+    groupResults = db.prepare(`
+      SELECT gm.id, gm.username as from_user, gm.text, gm.timestamp, gm.group_id,
+             cg.name as group_name, 'group' as source_type
+      FROM group_messages gm
+      JOIN chat_groups cg ON cg.id = gm.group_id
+      WHERE gm.deleted = 0 AND gm.text LIKE ? AND gm.group_id IN (${myGroups.map(() => '?').join(',')})
+      ORDER BY gm.timestamp DESC LIMIT 20
+    `).all(like, ...myGroups).map(r => ({
+      ...r,
+      color: usernameColor(r.from_user),
+    }))
+  }
+  res.json({ results: [...dmResults, ...groupResults].sort((a, b) => b.timestamp - a.timestamp).slice(0, 30) })
+})
+// ── Conversation Clear ──────────────────────────────────────────────────────
+
+app.delete('/api/dm/:partner', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const partner = req.params.partner
+  // Soft-delete all messages in the conversation
+  db.prepare(`UPDATE dm_messages SET deleted = 1 WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)`).run(auth.username, partner, partner, auth.username)
+  res.json({ message: 'Conversation cleared' })
+})
+
+// ── Media Gallery ───────────────────────────────────────────────────────────
+
+app.get('/api/media/dm/:partner', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const partner = req.params.partner
+  const files = db.prepare(`
+    SELECT id, from_user, file_url, file_name, file_type, file_size, timestamp
+    FROM dm_messages
+    WHERE deleted = 0 AND file_url IS NOT NULL
+      AND ((from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?))
+    ORDER BY timestamp DESC LIMIT 50
+  `).all(auth.username, partner, partner, auth.username)
+  res.json({ files })
+})
+
+app.get('/api/media/group/:id', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const groupId = Number(req.params.id)
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+    return res.status(403).json({ error: 'Not a member' })
+  }
+  const files = db.prepare(`
+    SELECT id, username as from_user, file_url, file_name, file_type, file_size, timestamp
+    FROM group_messages
+    WHERE deleted = 0 AND file_url IS NOT NULL AND group_id = ?
+    ORDER BY timestamp DESC LIMIT 50
+  `).all(groupId)
+  res.json({ files })
+})
+
+// ── Pinned Messages API ─────────────────────────────────────────────────────
+
+app.post('/api/groups/:id/pins/:msgId', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const groupId = Number(req.params.id)
+  const msgId = Number(req.params.msgId)
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+    return res.status(403).json({ error: 'Not a member' })
+  }
+  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId)
+  if (!msg || msg.deleted) return res.status(404).json({ error: 'Message not found' })
+  db.prepare('INSERT OR IGNORE INTO pinned_messages (group_id, message_id, pinned_by, pinned_at) VALUES (?, ?, ?, ?)').run(groupId, msgId, auth.username, Date.now())
+  broadcastToGroup(groupId, { type: 'pins_updated', groupId })
+  res.json({ message: 'Pinned' })
+})
+
+app.delete('/api/groups/:id/pins/:msgId', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const groupId = Number(req.params.id)
+  const msgId = Number(req.params.msgId)
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+    return res.status(403).json({ error: 'Not a member' })
+  }
+  db.prepare('DELETE FROM pinned_messages WHERE group_id = ? AND message_id = ?').run(groupId, msgId)
+  broadcastToGroup(groupId, { type: 'pins_updated', groupId })
+  res.json({ message: 'Unpinned' })
+})
+
+app.get('/api/groups/:id/pins', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const groupId = Number(req.params.id)
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+    return res.status(403).json({ error: 'Not a member' })
+  }
+  const pins = db.prepare(`
+    SELECT pm.*, gm.text, gm.username, gm.timestamp as msg_timestamp, gm.file_url, gm.file_name
+    FROM pinned_messages pm
+    JOIN group_messages gm ON gm.id = pm.message_id
+    WHERE pm.group_id = ? AND gm.deleted = 0
+    ORDER BY pm.pinned_at DESC
+  `).all(groupId).map(p => ({ ...p, color: usernameColor(p.username) }))
+  res.json({ pins })
+})
+
+// ── Contact Blocking API ────────────────────────────────────────────────────
+
+app.post('/api/block/:username', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const blocked = req.params.username
+  if (blocked === auth.username) return res.status(400).json({ error: 'Cannot block yourself' })
+  db.prepare('INSERT OR IGNORE INTO blocked_users (blocker, blocked, created_at) VALUES (?, ?, ?)').run(auth.username, blocked, Date.now())
+  res.json({ message: 'Blocked' })
+})
+
+app.delete('/api/block/:username', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  db.prepare('DELETE FROM blocked_users WHERE blocker = ? AND blocked = ?').run(auth.username, req.params.username)
+  res.json({ message: 'Unblocked' })
+})
+
+app.get('/api/blocked', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const blocked = db.prepare('SELECT blocked, created_at FROM blocked_users WHERE blocker = ?').all(auth.username)
+  res.json({ blocked })
+})
+
+// ── Message Forwarding API ──────────────────────────────────────────────────
+
+app.post('/api/forward', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const { messageId, messageType, toPartner, toGroupId } = req.body
+  if (!messageId || !messageType) return res.status(400).json({ error: 'Missing fields' })
+
+  // Get original message
+  let originalText = ''
+  let originalFile = null
+  let originalFrom = ''
+  if (messageType === 'dm') {
+    const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(messageId)
+    if (!msg || msg.deleted) return res.status(404).json({ error: 'Message not found' })
+    originalText = msg.text
+    originalFrom = msg.from_user
+    if (msg.file_url) originalFile = { url: msg.file_url, name: msg.file_name, type: msg.file_type, size: msg.file_size }
+  } else if (messageType === 'group') {
+    const msg = db.prepare('SELECT * FROM group_messages WHERE id = ?').get(messageId)
+    if (!msg || msg.deleted) return res.status(404).json({ error: 'Message not found' })
+    originalText = msg.text
+    originalFrom = msg.username
+    if (msg.file_url) originalFile = { url: msg.file_url, name: msg.file_name, type: msg.file_type, size: msg.file_size }
+  }
+
+  const fwdText = originalText ? `Fwd from ${originalFrom}: ${originalText}` : `Fwd from ${originalFrom}`
+
+  // Forward to DM
+  if (toPartner) {
+    const ts = Date.now()
+    const row = db.prepare(`INSERT INTO dm_messages (from_user, to_user, text, timestamp, file_url, file_name, file_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      auth.username, toPartner, fwdText, ts,
+      originalFile?.url ?? null, originalFile?.name ?? null, originalFile?.type ?? null, originalFile?.size ?? null
+    )
+    const newMsg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(row.lastInsertRowid)
+    const payload = { type: 'dm_message', message: { ...newMsg, color: usernameColor(newMsg.from_user) } }
+    sendToUser(auth.username, payload)
+    sendToUser(toPartner, payload)
+  }
+
+  // Forward to group
+  if (toGroupId) {
+    const gid = Number(toGroupId)
+    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(gid, auth.username)) {
+      return res.status(403).json({ error: 'Not a member of target group' })
+    }
+    const ts = Date.now()
+    db.prepare(`INSERT INTO group_messages (group_id, username, text, timestamp, file_url, file_name, file_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      gid, auth.username, fwdText, ts,
+      originalFile?.url ?? null, originalFile?.name ?? null, originalFile?.type ?? null, originalFile?.size ?? null
+    )
+    const newMsg = db.prepare('SELECT * FROM group_messages WHERE id = last_insert_rowid()').get()
+    broadcastToGroup(gid, {
+      type: 'group_message', groupId: gid,
+      message: { ...newMsg, color: usernameColor(newMsg.username) }
+    })
+  }
+
+  res.json({ message: 'Forwarded' })
+})
+
+// ── Message Edit / Delete / Reactions API ─────────────────────────────────────
+
+// Helper: get reactions for a message
+function getReactions(messageId, messageType) {
+  return db.prepare('SELECT emoji, GROUP_CONCAT(username) as users FROM message_reactions WHERE message_id = ? AND message_type = ? GROUP BY emoji').all(messageId, messageType).map(r => ({ emoji: r.emoji, users: r.users.split(',') }))
+}
+
+// Edit DM message
+app.put('/api/dms/:partner/messages/:id', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const msgId = Number(req.params.id)
+  const text = String(req.body.text || '').trim().slice(0, 2000)
+  if (!text) return res.status(400).json({ error: 'Text is required' })
+  const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(msgId)
+  if (!msg) return res.status(404).json({ error: 'Message not found' })
+  if (msg.from_user !== auth.username) return res.status(403).json({ error: 'Can only edit your own messages' })
+  if (msg.deleted) return res.status(400).json({ error: 'Message is deleted' })
+  db.prepare('UPDATE dm_messages SET text = ?, edited = 1 WHERE id = ?').run(text, msgId)
+  const partner = msg.from_user === auth.username ? msg.to_user : msg.from_user
+  const update = { type: 'dm_edited', messageId: msgId, text, partner }
+  sendToUser(auth.username, update)
+  sendToUser(partner, update)
+  res.json({ message: 'Updated' })
+})
+
+// Delete DM message
+app.delete('/api/dms/:partner/messages/:id', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const msgId = Number(req.params.id)
+  const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(msgId)
+  if (!msg) return res.status(404).json({ error: 'Message not found' })
+  if (msg.from_user !== auth.username) return res.status(403).json({ error: 'Can only delete your own messages' })
+  db.prepare('UPDATE dm_messages SET deleted = 1, text = \'\' WHERE id = ?').run(msgId)
+  const partner = msg.from_user === auth.username ? msg.to_user : msg.from_user
+  const update = { type: 'dm_deleted', messageId: msgId, partner }
+  sendToUser(auth.username, update)
+  sendToUser(partner, update)
+  res.json({ message: 'Deleted' })
+})
+
+// Edit group message
+app.put('/api/groups/:id/messages/:msgId', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const groupId = Number(req.params.id)
+  const msgId = Number(req.params.msgId)
+  const text = String(req.body.text || '').trim().slice(0, 2000)
+  if (!text) return res.status(400).json({ error: 'Text is required' })
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+    return res.status(403).json({ error: 'Not a member' })
+  }
+  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId)
+  if (!msg) return res.status(404).json({ error: 'Message not found' })
+  if (msg.username !== auth.username) return res.status(403).json({ error: 'Can only edit your own messages' })
+  if (msg.deleted) return res.status(400).json({ error: 'Message is deleted' })
+  db.prepare('UPDATE group_messages SET text = ?, edited = 1 WHERE id = ?').run(text, msgId)
+  broadcastToGroup(groupId, { type: 'group_msg_edited', groupId, messageId: msgId, text })
+  res.json({ message: 'Updated' })
+})
+
+// Delete group message
+app.delete('/api/groups/:id/messages/:msgId', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const groupId = Number(req.params.id)
+  const msgId = Number(req.params.msgId)
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+    return res.status(403).json({ error: 'Not a member' })
+  }
+  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId)
+  if (!msg) return res.status(404).json({ error: 'Message not found' })
+  // Allow message author or group admins to delete
+  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)
+  if (msg.username !== auth.username && membership?.role !== 'admin') {
+    return res.status(403).json({ error: 'Only the author or admins can delete messages' })
+  }
+  db.prepare('UPDATE group_messages SET deleted = 1, text = \'\' WHERE id = ?').run(msgId)
+  broadcastToGroup(groupId, { type: 'group_msg_deleted', groupId, messageId: msgId })
+  res.json({ message: 'Deleted' })
+})
+
+// Add/toggle reaction
+app.post('/api/reactions', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const { messageId, messageType, emoji } = req.body
+  if (!messageId || !messageType || !emoji) return res.status(400).json({ error: 'Missing fields' })
+  if (!['dm', 'group', 'channel'].includes(messageType)) return res.status(400).json({ error: 'Invalid message type' })
+  // Toggle: remove if already exists, add if not
+  const existing = db.prepare('SELECT id FROM message_reactions WHERE message_id = ? AND message_type = ? AND username = ? AND emoji = ?').get(messageId, messageType, auth.username, emoji)
+  if (existing) {
+    db.prepare('DELETE FROM message_reactions WHERE id = ?').run(existing.id)
+  } else {
+    db.prepare('INSERT OR IGNORE INTO message_reactions (message_id, message_type, username, emoji, created_at) VALUES (?, ?, ?, ?, ?)').run(messageId, messageType, auth.username, emoji, Date.now())
+  }
+  const reactions = getReactions(messageId, messageType)
+  // Broadcast reaction update
+  if (messageType === 'dm') {
+    const msg = db.prepare('SELECT from_user, to_user FROM dm_messages WHERE id = ?').get(messageId)
+    if (msg) {
+      const update = { type: 'reaction_update', messageId, messageType, reactions }
+      sendToUser(msg.from_user, update)
+      sendToUser(msg.to_user, update)
+    }
+  } else if (messageType === 'group') {
+    const msg = db.prepare('SELECT group_id FROM group_messages WHERE id = ?').get(messageId)
+    if (msg) broadcastToGroup(msg.group_id, { type: 'reaction_update', messageId, messageType, reactions })
+  }
+  res.json({ reactions })
+})
+
+// Get reactions for a message
+app.get('/api/reactions/:messageType/:messageId', (req, res) => {
+  const auth = getAuth(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const reactions = getReactions(Number(req.params.messageId), req.params.messageType)
+  res.json({ reactions })
 })
 
 // --- WebSocket server ---
@@ -947,7 +1345,7 @@ function handleWsMessage(ws, msg) {
   if (['call_invite', 'call_accept', 'call_reject', 'call_end'].includes(msg.type)) {
     const client = clients.get(ws)
     if (!client || !msg.toUser) return
-    sendToUser(msg.toUser, { type: msg.type, fromUser: client.username })
+    sendToUser(msg.toUser, { type: msg.type, fromUser: client.username, callMode: msg.callMode })
   }
 
   if (msg.type === 'dm_typing') {

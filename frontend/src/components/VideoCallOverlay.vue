@@ -1,9 +1,9 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { Room, RoomEvent, Track } from 'livekit-client'
-import { useVideoCall, callState, callToken, callUrl, callPartner } from '@/composables/useVideoCall'
+import { useVideoCall, callState, callToken, callUrl, callPartner, callMode } from '@/composables/useVideoCall'
 import { usernameColor } from '@/utils/color'
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone } from 'lucide-vue-next'
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, MonitorUp, MonitorOff } from 'lucide-vue-next'
 
 const { acceptCall, rejectCall, endCall } = useVideoCall()
 
@@ -11,12 +11,14 @@ const remoteVideoRef = ref(null)
 const localVideoRef = ref(null)
 const micOn = ref(true)
 const camOn = ref(true)
+const screenSharing = ref(false)
 const duration = ref(0)
 
 let room = null
 let durationTimer = null
 
 const partnerColor = () => usernameColor(callPartner.value ?? '')
+const isAudioOnly = () => callMode.value === 'audio'
 
 // ── LiveKit room ──────────────────────────────────────────────────────────────
 async function connectRoom() {
@@ -42,21 +44,24 @@ async function connectRoom() {
 
   await room.connect(callUrl.value, callToken.value)
 
-  // Publish local camera + mic
-  await room.localParticipant.enableCameraAndMicrophone()
-
-  // Attach local camera preview
-  const camPub = room.localParticipant.getTrackPublications().find(
-    p => p.track?.kind === Track.Kind.Video
-  )
-  if (camPub?.track && localVideoRef.value) {
-    const el = camPub.track.attach()
-    el.style.cssText = 'width:100%;height:100%;object-fit:cover;'
-    localVideoRef.value.innerHTML = ''
-    localVideoRef.value.appendChild(el)
+  // Publish local tracks based on call mode
+  if (isAudioOnly()) {
+    await room.localParticipant.setMicrophoneEnabled(true)
+    camOn.value = false
+  } else {
+    await room.localParticipant.enableCameraAndMicrophone()
+    // Attach local camera preview
+    const camPub = room.localParticipant.getTrackPublications().find(
+      p => p.track?.kind === Track.Kind.Video
+    )
+    if (camPub?.track && localVideoRef.value) {
+      const el = camPub.track.attach()
+      el.style.cssText = 'width:100%;height:100%;object-fit:cover;'
+      localVideoRef.value.innerHTML = ''
+      localVideoRef.value.appendChild(el)
+    }
   }
 
-  // Duration timer
   durationTimer = setInterval(() => { duration.value++ }, 1000)
 }
 
@@ -70,6 +75,31 @@ async function toggleCam() {
   if (!room) return
   camOn.value = !camOn.value
   await room.localParticipant.setCameraEnabled(camOn.value)
+  if (camOn.value) {
+    // Re-attach local preview
+    setTimeout(() => {
+      const camPub = room.localParticipant.getTrackPublications().find(
+        p => p.track?.kind === Track.Kind.Video && p.track?.source === Track.Source.Camera
+      )
+      if (camPub?.track && localVideoRef.value) {
+        const el = camPub.track.attach()
+        el.style.cssText = 'width:100%;height:100%;object-fit:cover;'
+        localVideoRef.value.innerHTML = ''
+        localVideoRef.value.appendChild(el)
+      }
+    }, 300)
+  }
+}
+
+async function toggleScreenShare() {
+  if (!room) return
+  try {
+    screenSharing.value = !screenSharing.value
+    await room.localParticipant.setScreenShareEnabled(screenSharing.value)
+  } catch (err) {
+    screenSharing.value = false
+    console.error('Screen share error:', err)
+  }
 }
 
 function formatDuration(secs) {
@@ -78,7 +108,6 @@ function formatDuration(secs) {
   return `${m}:${s}`
 }
 
-// Connect when state goes to 'connected'
 watch(callState, async (state) => {
   if (state === 'connected' && callToken.value) {
     await connectRoom()
@@ -94,11 +123,13 @@ function cleanup() {
   clearInterval(durationTimer)
   durationTimer = null
   duration.value = 0
+  screenSharing.value = false
+  camOn.value = true
+  micOn.value = true
   if (room) {
     room.disconnect()
     room = null
   }
-  // Remove any detached audio elements
   document.querySelectorAll('audio[data-lk-audio]').forEach(el => el.remove())
 }
 </script>
@@ -117,7 +148,7 @@ function cleanup() {
         </div>
         <div class="text-center">
           <p class="text-white text-xl font-semibold">{{ callPartner }}</p>
-          <p class="text-zinc-400 text-sm mt-1">Calling…</p>
+          <p class="text-zinc-400 text-sm mt-1">{{ callMode === 'audio' ? 'Audio call…' : 'Calling…' }}</p>
         </div>
         <button
           class="mt-4 w-14 h-14 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center transition-colors"
@@ -140,7 +171,7 @@ function cleanup() {
         </div>
         <div class="text-center">
           <p class="text-white text-xl font-semibold">{{ callPartner }}</p>
-          <p class="text-zinc-400 text-sm mt-1">Incoming video call…</p>
+          <p class="text-zinc-400 text-sm mt-1">{{ callMode === 'audio' ? 'Incoming audio call…' : 'Incoming video call…' }}</p>
         </div>
         <div class="flex gap-8 mt-4">
           <button
@@ -177,11 +208,10 @@ function cleanup() {
         </div>
       </div>
 
-      <!-- Video area -->
+      <!-- Video / Audio area -->
       <div class="relative flex-1 bg-zinc-900 overflow-hidden">
         <!-- Remote video -->
         <div ref="remoteVideoRef" class="w-full h-full flex items-center justify-center">
-          <!-- Placeholder when no remote video yet -->
           <div
             class="w-24 h-24 rounded-full flex items-center justify-center text-white text-3xl font-bold opacity-30"
             :style="{ backgroundColor: partnerColor() }"
@@ -192,13 +222,14 @@ function cleanup() {
 
         <!-- Local video PiP -->
         <div
+          v-if="camOn"
           ref="localVideoRef"
           class="absolute bottom-4 right-4 w-36 h-28 rounded-xl overflow-hidden border-2 border-zinc-700 bg-zinc-800"
         />
       </div>
 
       <!-- Controls -->
-      <div class="flex items-center justify-center gap-5 py-5 bg-zinc-900/80">
+      <div class="flex items-center justify-center gap-4 py-5 bg-zinc-900/80">
         <button
           class="w-12 h-12 rounded-full flex items-center justify-center transition-colors"
           :class="micOn ? 'bg-zinc-700 hover:bg-zinc-600' : 'bg-red-500 hover:bg-red-600'"
@@ -210,14 +241,6 @@ function cleanup() {
         </button>
 
         <button
-          class="w-14 h-14 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center transition-colors"
-          title="End call"
-          @click="endCall"
-        >
-          <PhoneOff class="w-6 h-6 text-white" />
-        </button>
-
-        <button
           class="w-12 h-12 rounded-full flex items-center justify-center transition-colors"
           :class="camOn ? 'bg-zinc-700 hover:bg-zinc-600' : 'bg-red-500 hover:bg-red-600'"
           :title="camOn ? 'Turn off camera' : 'Turn on camera'"
@@ -225,6 +248,25 @@ function cleanup() {
         >
           <Video v-if="camOn" class="w-5 h-5 text-white" />
           <VideoOff v-else class="w-5 h-5 text-white" />
+        </button>
+
+        <!-- Screen share -->
+        <button
+          class="w-12 h-12 rounded-full flex items-center justify-center transition-colors"
+          :class="screenSharing ? 'bg-violet-600 hover:bg-violet-700' : 'bg-zinc-700 hover:bg-zinc-600'"
+          :title="screenSharing ? 'Stop sharing screen' : 'Share screen'"
+          @click="toggleScreenShare"
+        >
+          <MonitorOff v-if="screenSharing" class="w-5 h-5 text-white" />
+          <MonitorUp v-else class="w-5 h-5 text-white" />
+        </button>
+
+        <button
+          class="w-14 h-14 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center transition-colors"
+          title="End call"
+          @click="endCall"
+        >
+          <PhoneOff class="w-6 h-6 text-white" />
         </button>
       </div>
     </template>

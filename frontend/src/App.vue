@@ -15,8 +15,9 @@ import CreateGroupModal from '@/components/CreateGroupModal.vue'
 import NewDMModal from '@/components/NewDMModal.vue'
 import Button from '@/components/ui/button/Button.vue'
 import TooltipProvider from '@/components/ui/tooltip/TooltipProvider.vue'
-import { MessageCircle, Send, Hash, Wifi, WifiOff, Settings, LogOut, Users, Plus, Phone, PhoneOff } from 'lucide-vue-next'
+import { MessageCircle, Send, Hash, Wifi, WifiOff, Settings, LogOut, Users, Plus, Phone, PhoneOff, Search } from 'lucide-vue-next'
 import { useVideoCall, callState, callPartner } from '@/composables/useVideoCall'
+import SearchModal from '@/components/SearchModal.vue'
 
 const { token, username, isAuthenticated, logout } = useAuth()
 const { acceptCall, rejectCall } = useVideoCall()
@@ -31,8 +32,27 @@ const messagesContainer = ref(null)
 const showSettings = ref(false)
 const showCreateGroup = ref(false)
 const showNewDM = ref(false)
+const showSearch = ref(false)
 
 let typingDebounce = null
+
+// ── Browser notifications ───────────────────────────────────────────────────
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission()
+  }
+}
+
+function sendBrowserNotification(title, body) {
+  if (!('Notification' in window)) return
+  if (Notification.permission !== 'granted') return
+  if (document.hasFocus()) return
+  try {
+    const n = new Notification(title, { body, icon: '/favicon.ico' })
+    n.onclick = () => { window.focus(); n.close() }
+    setTimeout(() => n.close(), 5000)
+  } catch { /* ignore */ }
+}
 
 // ------- Derived state -------
 
@@ -84,6 +104,7 @@ const typingText = computed(() => {
 
 onMounted(() => {
   if (isAuthenticated.value) {
+    requestNotificationPermission()
     if (connected.value && !joined.value) {
       join(token.value)
     } else if (!connected.value) {
@@ -94,6 +115,7 @@ onMounted(() => {
 
 function handleAuthenticated() {
   showSettings.value = false
+  requestNotificationPermission()
   if (connected.value) {
     join(token.value)
   } else {
@@ -131,6 +153,27 @@ watch(groupMemberUpdateId, (gid) => {
   if (gid !== null) {
     if (activeGroupId.value === gid) fetchGroupDetails(gid)
     groupMemberUpdateId.value = null
+  }
+})
+
+// Browser notification for incoming calls
+watch(callState, (state) => {
+  if (state === 'incoming') {
+    sendBrowserNotification(`${callPartner.value} is calling`, 'Incoming video call')
+  }
+})
+
+// Browser notification for new DM messages
+watch(() => conversations.value.map(c => c.unread_count).join(','), (newVal, oldVal) => {
+  if (!oldVal) return
+  const newCounts = newVal.split(',').map(Number)
+  const oldCounts = oldVal.split(',').map(Number)
+  for (let i = 0; i < conversations.value.length; i++) {
+    if (newCounts[i] > (oldCounts[i] || 0)) {
+      const conv = conversations.value[i]
+      sendBrowserNotification(`New message from ${conv.partner}`, conv.last_text || 'Sent a file')
+      break
+    }
   }
 })
 
@@ -254,8 +297,15 @@ watch(joined, (v) => { if (v) scrollToBottom() })
         <div class="h-12 px-4 flex items-center gap-2 border-b border-border">
           <MessageCircle class="w-4 h-4 text-muted-foreground flex-shrink-0" />
           <span class="font-semibold text-sm">ChatApp</span>
+          <button
+            class="ml-auto p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            title="Search messages"
+            @click="showSearch = true"
+          >
+            <Search class="w-3.5 h-3.5" />
+          </button>
           <span
-            class="ml-auto w-1.5 h-1.5 rounded-full flex-shrink-0 transition-colors"
+            class="w-1.5 h-1.5 rounded-full flex-shrink-0 transition-colors"
             :class="connected ? 'bg-emerald-500' : 'bg-amber-400'"
           />
         </div>
@@ -557,6 +607,14 @@ watch(joined, (v) => { if (v) scrollToBottom() })
       </main>
 
     </div>
+
+    <!-- Search modal -->
+    <SearchModal
+      v-if="showSearch"
+      @close="showSearch = false"
+      @open-dm="(p) => { openDM(p); showSearch = false }"
+      @open-group="(id) => { openGroup(id); showSearch = false }"
+    />
 
     <!-- Create group modal -->
     <CreateGroupModal

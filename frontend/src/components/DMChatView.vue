@@ -6,7 +6,12 @@ import { useWebSocket } from '@/composables/useWebSocket'
 import { dmTypingUsers, onlineStatuses } from '@/composables/useWebSocket'
 import { usernameColor } from '@/utils/color'
 import Button from '@/components/ui/button/Button.vue'
-import { Send, Check, CheckCheck, CornerUpLeft, X, Paperclip, FileText, Video } from 'lucide-vue-next'
+import MessageActions from '@/components/MessageActions.vue'
+import MessageReactions from '@/components/MessageReactions.vue'
+import AudioRecorder from '@/components/AudioRecorder.vue'
+import ForwardModal from '@/components/ForwardModal.vue'
+import EmojiPicker from '@/components/EmojiPicker.vue'
+import { Send, Check, CheckCheck, X, Paperclip, FileText, Video, Ban, Phone } from 'lucide-vue-next'
 import { useVideoCall, callState, callPartner } from '@/composables/useVideoCall'
 import VideoCallOverlay from './VideoCallOverlay.vue'
 
@@ -14,7 +19,7 @@ const props = defineProps({
   partner: { type: String, required: true },
 })
 
-const { username } = useAuth()
+const { username, token } = useAuth()
 const { dmMessages, fetchMessages, sendDM, conversations } = useDMs()
 const { sendDMTyping } = useWebSocket()
 const { startCall, acceptCall, rejectCall } = useVideoCall()
@@ -24,8 +29,11 @@ const textareaRef = ref(null)
 const messagesContainer = ref(null)
 const replyingTo = ref(null)
 const fileInputRef = ref(null)
-const pendingFile = ref(null)   // { url, name, type, size, previewUrl }
+const pendingFile = ref(null)
 const uploadingFile = ref(false)
+const editingMsg = ref(null)
+const editText = ref('')
+const forwardingMsg = ref(null)
 
 const partnerColor = computed(() => usernameColor(props.partner))
 const messages = computed(() => dmMessages.value[props.partner] ?? [])
@@ -37,6 +45,7 @@ const conversation = computed(() => conversations.value.find(c => c.partner === 
 // Load messages when partner changes
 watch(() => props.partner, async (p) => {
   if (p) await fetchMessages(p)
+  editingMsg.value = null
 }, { immediate: true })
 
 function scrollToBottom() {
@@ -87,7 +96,7 @@ async function handleFileSelect(e) {
     form.append('file', file)
     const res = await fetch('/api/upload', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${useAuth().token.value}` },
+      headers: { Authorization: `Bearer ${token.value}` },
       body: form,
     })
     const data = await res.json()
@@ -111,6 +120,49 @@ function formatFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// ── Edit / Delete ─────────────────────────────────────────────────────────
+function startEdit(msg) {
+  editingMsg.value = msg
+  editText.value = msg.text
+}
+
+function cancelEdit() {
+  editingMsg.value = null
+  editText.value = ''
+}
+
+async function saveEdit() {
+  if (!editingMsg.value || !editText.value.trim()) return
+  try {
+    await fetch(`/api/dms/${props.partner}/messages/${editingMsg.value.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
+      body: JSON.stringify({ text: editText.value.trim() }),
+    })
+  } catch (err) { console.error('Edit error:', err) }
+  cancelEdit()
+}
+
+async function deleteMessage(msg) {
+  if (!confirm('Delete this message?')) return
+  try {
+    await fetch(`/api/dms/${props.partner}/messages/${msg.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+  } catch (err) { console.error('Delete error:', err) }
+}
+
+async function toggleReaction({ messageId, emoji, messageType }) {
+  try {
+    await fetch('/api/reactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
+      body: JSON.stringify({ messageId, messageType: messageType || 'dm', emoji }),
+    })
+  } catch (err) { console.error('Reaction error:', err) }
 }
 
 // ── Send ──────────────────────────────────────────────────────────────────
@@ -157,6 +209,26 @@ function formatLastSeen(ts) {
   return `Last seen ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}`
 }
 
+function formatDateSep(ts) {
+  const d = new Date(ts)
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yesterday = new Date(today - 86400000)
+  const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  if (msgDay.getTime() === today.getTime()) return 'Today'
+  if (msgDay.getTime() === yesterday.getTime()) return 'Yesterday'
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined })
+}
+
+function shouldShowDateSep(idx) {
+  if (idx === 0) return true
+  const prev = messages.value[idx - 1]
+  const curr = messages.value[idx]
+  const pd = new Date(prev.timestamp).toDateString()
+  const cd = new Date(curr.timestamp).toDateString()
+  return pd !== cd
+}
+
 const isMine = (msg) => msg.from_user === username.value
 
 const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.value)
@@ -190,15 +262,23 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
           {{ isPartnerOnline ? 'Online' : formatLastSeen(partnerStatus?.lastSeen) }}
         </p>
       </div>
-      <!-- Video call button -->
-      <button
-        v-if="isPartnerOnline && callState === 'idle'"
-        class="ml-auto p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-        title="Start video call"
-        @click="startCall(partner)"
-      >
-        <Video class="w-4 h-4" />
-      </button>
+      <!-- Call buttons -->
+      <div v-if="isPartnerOnline && callState === 'idle'" class="ml-auto flex items-center gap-1">
+        <button
+          class="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          title="Audio call"
+          @click="startCall(partner, 'audio')"
+        >
+          <Phone class="w-4 h-4" />
+        </button>
+        <button
+          class="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          title="Video call"
+          @click="startCall(partner, 'video')"
+        >
+          <Video class="w-4 h-4" />
+        </button>
+      </div>
     </div>
 
     <!-- Messages -->
@@ -215,109 +295,159 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
         <p class="text-xs opacity-60 mt-1">Send a message to start the conversation</p>
       </div>
 
-      <div
-        v-for="msg in messages"
-        :key="msg.id"
-        class="flex gap-2"
-        :class="isMine(msg) ? 'flex-row-reverse' : 'flex-row'"
-      >
-        <!-- Avatar (partner only) -->
-        <div
-          v-if="!isMine(msg)"
-          class="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0 mt-auto mb-0.5"
-          :style="{ backgroundColor: partnerColor }"
-        >
-          {{ partner.slice(0, 2).toUpperCase() }}
+      <template v-for="(msg, idx) in messages" :key="msg.id">
+        <!-- Date separator -->
+        <div v-if="shouldShowDateSep(idx)" class="flex items-center gap-3 py-3">
+          <div class="flex-1 h-px bg-border" />
+          <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{{ formatDateSep(msg.timestamp) }}</span>
+          <div class="flex-1 h-px bg-border" />
         </div>
 
-        <div class="max-w-[70%] group/msg" :class="isMine(msg) ? 'items-end' : 'items-start'" style="display:flex;flex-direction:column">
-
-          <!-- Reply quote -->
+        <div
+          class="flex gap-2 group/msg"
+          :class="isMine(msg) ? 'flex-row-reverse' : 'flex-row'"
+        >
+          <!-- Avatar (partner only) -->
           <div
-            v-if="msg.reply_to_id"
-            class="mb-1 px-2 py-1 rounded-md border-l-2 text-xs opacity-70"
-            :class="isMine(msg)
-              ? 'border-violet-400 bg-violet-500/10 text-violet-200'
-              : 'border-muted-foreground bg-muted/60'"
+            v-if="!isMine(msg)"
+            class="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0 mt-auto mb-0.5"
+            :style="{ backgroundColor: partnerColor }"
           >
-            <span class="font-semibold">{{ msg.reply_to_username }}</span>
-            <p class="truncate opacity-80">{{ msg.reply_to_text }}</p>
+            {{ partner.slice(0, 2).toUpperCase() }}
           </div>
 
-          <!-- Bubble -->
-          <div class="flex items-end gap-1.5" :class="isMine(msg) ? 'flex-row-reverse' : 'flex-row'">
+          <div class="max-w-[70%] group/msg" :class="isMine(msg) ? 'items-end' : 'items-start'" style="display:flex;flex-direction:column">
 
-            <!-- Reply button (hover) -->
-            <button
-              class="opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 rounded-md hover:bg-accent text-muted-foreground"
-              title="Reply"
-              @click="replyingTo = msg"
-            >
-              <CornerUpLeft class="w-3 h-3" />
-            </button>
-
+            <!-- Reply quote -->
             <div
-              class="rounded-2xl text-sm leading-relaxed break-words max-w-full overflow-hidden"
+              v-if="msg.reply_to_id"
+              class="mb-1 px-2 py-1 rounded-md border-l-2 text-xs opacity-70"
               :class="isMine(msg)
-                ? 'bg-violet-600 text-white rounded-tr-sm'
-                : 'bg-muted text-foreground rounded-tl-sm'"
+                ? 'border-violet-400 bg-violet-500/10 text-violet-200'
+                : 'border-muted-foreground bg-muted/60'"
             >
-              <!-- File attachment -->
-              <div v-if="msg.file_url" class="p-1">
-                <img
-                  v-if="msg.file_type?.startsWith('image/')"
-                  :src="msg.file_url"
-                  :alt="msg.file_name"
-                  class="max-w-[280px] max-h-64 rounded-xl object-contain block"
-                />
-                <video
-                  v-else-if="msg.file_type?.startsWith('video/')"
-                  :src="msg.file_url"
-                  controls
-                  class="max-w-[280px] max-h-64 rounded-xl block"
-                />
-                <a
-                  v-else
-                  :href="msg.file_url"
-                  :download="msg.file_name"
-                  class="flex items-center gap-2 px-3 py-2 rounded-xl hover:opacity-80 transition-opacity"
-                  :class="isMine(msg) ? 'bg-violet-500/40' : 'bg-background/50'"
-                >
-                  <FileText class="w-4 h-4 flex-shrink-0" />
-                  <div class="min-w-0">
-                    <p class="text-xs font-medium truncate max-w-[200px]">{{ msg.file_name }}</p>
-                    <p class="text-[10px] opacity-60">{{ formatFileSize(msg.file_size) }}</p>
-                  </div>
-                </a>
+              <span class="font-semibold">{{ msg.reply_to_username }}</span>
+              <p class="truncate opacity-80">{{ msg.reply_to_text }}</p>
+            </div>
+
+            <!-- Bubble + actions row -->
+            <div class="flex items-center gap-1.5" :class="isMine(msg) ? 'flex-row-reverse' : 'flex-row'">
+
+              <!-- Action buttons (hover) -->
+              <MessageActions
+                v-if="!msg.deleted"
+                :msg="msg"
+                :is-mine="isMine(msg)"
+                message-type="dm"
+                @reply="replyingTo = $event"
+                @edit="startEdit"
+                @delete="deleteMessage"
+                @react="toggleReaction"
+                @forward="(m) => forwardingMsg = m"
+              />
+
+              <!-- Deleted message -->
+              <div v-if="msg.deleted" class="rounded-2xl px-3 py-2 text-sm italic opacity-50 bg-muted/30 text-muted-foreground">
+                <Ban class="w-3 h-3 inline-block mr-1" />
+                Message deleted
               </div>
-              <!-- Text -->
-              <p v-if="msg.text" class="px-3 py-2 whitespace-pre-wrap" :class="{ 'pt-0': msg.file_url }">{{ msg.text }}</p>
+
+              <!-- Edit mode -->
+              <div v-else-if="editingMsg?.id === msg.id" class="flex flex-col gap-1 w-full">
+                <textarea
+                  v-model="editText"
+                  class="rounded-xl border border-violet-500 bg-background px-3 py-2 text-sm outline-none resize-none leading-relaxed"
+                  rows="2"
+                  @keydown.enter.prevent="saveEdit"
+                  @keydown.escape="cancelEdit"
+                />
+                <div class="flex gap-1 justify-end">
+                  <button class="text-[10px] px-2 py-0.5 rounded text-muted-foreground hover:text-foreground" @click="cancelEdit">Cancel</button>
+                  <button class="text-[10px] px-2 py-0.5 rounded bg-violet-600 text-white hover:bg-violet-700" @click="saveEdit">Save</button>
+                </div>
+              </div>
+
+              <!-- Normal message bubble -->
+              <div
+                v-else
+                class="rounded-2xl text-sm leading-relaxed break-words max-w-full overflow-hidden"
+                :class="isMine(msg)
+                  ? 'bg-violet-600 text-white rounded-tr-sm'
+                  : 'bg-muted text-foreground rounded-tl-sm'"
+              >
+                <!-- File attachment -->
+                <div v-if="msg.file_url" class="p-1">
+                  <img
+                    v-if="msg.file_type?.startsWith('image/')"
+                    :src="msg.file_url"
+                    :alt="msg.file_name"
+                    class="max-w-[280px] max-h-64 rounded-xl object-contain block"
+                  />
+                  <video
+                    v-else-if="msg.file_type?.startsWith('video/')"
+                    :src="msg.file_url"
+                    controls
+                    class="max-w-[280px] max-h-64 rounded-xl block"
+                  />
+                  <audio
+                    v-else-if="msg.file_type?.startsWith('audio/')"
+                    :src="msg.file_url"
+                    controls
+                    class="max-w-[260px] rounded-xl block"
+                  />
+                  <a
+                    v-else
+                    :href="msg.file_url"
+                    :download="msg.file_name"
+                    class="flex items-center gap-2 px-3 py-2 rounded-xl hover:opacity-80 transition-opacity"
+                    :class="isMine(msg) ? 'bg-violet-500/40' : 'bg-background/50'"
+                  >
+                    <FileText class="w-4 h-4 flex-shrink-0" />
+                    <div class="min-w-0">
+                      <p class="text-xs font-medium truncate max-w-[200px]">{{ msg.file_name }}</p>
+                      <p class="text-[10px] opacity-60">{{ formatFileSize(msg.file_size) }}</p>
+                    </div>
+                  </a>
+                </div>
+                <!-- Text -->
+                <p v-if="msg.text" class="px-3 py-2 whitespace-pre-wrap" :class="{ 'pt-0': msg.file_url }">{{ msg.text }}</p>
+              </div>
+            </div>
+
+            <!-- Reactions -->
+            <MessageReactions
+              v-if="!msg.deleted"
+              :reactions="msg.reactions || []"
+              :message-id="msg.id"
+              message-type="dm"
+              @react="toggleReaction"
+            />
+
+            <!-- Time + status + edited -->
+            <div class="flex items-center gap-1 mt-0.5 px-1" :class="isMine(msg) ? 'flex-row-reverse' : 'flex-row'">
+              <span class="text-[10px] text-muted-foreground opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                {{ formatTime(msg.timestamp) }}
+              </span>
+              <span v-if="msg.edited" class="text-[9px] text-muted-foreground/60 italic">(edited)</span>
+              <!-- Status ticks (own messages only) -->
+              <span v-if="isMine(msg) && !msg.deleted" class="flex-shrink-0">
+                <CheckCheck
+                  v-if="msg.status === 'read'"
+                  class="w-3 h-3 text-blue-400"
+                />
+                <CheckCheck
+                  v-else-if="msg.status === 'delivered'"
+                  class="w-3 h-3 text-muted-foreground"
+                />
+                <Check
+                  v-else
+                  class="w-3 h-3 text-muted-foreground/60"
+                />
+              </span>
             </div>
           </div>
-
-          <!-- Time + status -->
-          <div class="flex items-center gap-1 mt-0.5 px-1" :class="isMine(msg) ? 'flex-row-reverse' : 'flex-row'">
-            <span class="text-[10px] text-muted-foreground opacity-0 group-hover/msg:opacity-100 transition-opacity">
-              {{ formatTime(msg.timestamp) }}
-            </span>
-            <!-- Status ticks (own messages only) -->
-            <span v-if="isMine(msg)" class="flex-shrink-0">
-              <CheckCheck
-                v-if="msg.status === 'read'"
-                class="w-3 h-3 text-blue-400"
-              />
-              <CheckCheck
-                v-else-if="msg.status === 'delivered'"
-                class="w-3 h-3 text-muted-foreground"
-              />
-              <Check
-                v-else
-                class="w-3 h-3 text-muted-foreground/60"
-              />
-            </span>
-          </div>
         </div>
-      </div>
+      </template>
 
       <!-- Typing indicator -->
       <div v-if="isTyping" class="flex items-center gap-2 py-1">
@@ -380,6 +510,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
         >
           <Paperclip class="w-4 h-4" />
         </button>
+        <EmojiPicker @select="(e) => { messageInput += e }" />
         <textarea
           ref="textareaRef"
           v-model="messageInput"
@@ -389,6 +520,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
           @keydown="handleKeydown"
           @input="handleInputChange"
         />
+        <AudioRecorder @recorded="(file) => { pendingFile = file; handleSend() }" />
         <Button
           size="icon"
           class="h-8 w-8 flex-shrink-0 mb-0.5"
@@ -401,4 +533,13 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
     </div>
 
   </div>
+
+  <!-- Forward modal -->
+  <ForwardModal
+    v-if="forwardingMsg"
+    :message-id="forwardingMsg.id"
+    message-type="dm"
+    @close="forwardingMsg = null"
+    @forwarded="forwardingMsg = null"
+  />
 </template>

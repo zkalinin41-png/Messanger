@@ -6,6 +6,7 @@ export const callState = ref('idle')    // 'idle' | 'calling' | 'incoming' | 'co
 export const callPartner = ref(null)    // username of the other person
 export const callToken = ref(null)      // LiveKit JWT
 export const callUrl = ref(null)        // LiveKit WSS URL
+export const callMode = ref('video')    // 'video' | 'audio'
 
 // Injected by useWebSocket once the connection is ready (avoids circular import)
 let _sendWs = null
@@ -28,10 +29,11 @@ async function fetchVideoToken(partner) {
 }
 
 export function useVideoCall() {
-  async function startCall(partner) {
+  async function startCall(partner, mode = 'video') {
     callState.value = 'calling'
     callPartner.value = partner
-    send({ type: 'call_invite', toUser: partner })
+    callMode.value = mode
+    send({ type: 'call_invite', toUser: partner, callMode: mode })
   }
 
   async function acceptCall() {
@@ -62,9 +64,10 @@ export function useVideoCall() {
     callPartner.value = null
     callToken.value = null
     callUrl.value = null
+    callMode.value = 'video'
   }
 
-  return { callState, callPartner, callToken, callUrl, startCall, acceptCall, rejectCall, endCall }
+  return { callState, callPartner, callToken, callUrl, callMode, startCall, acceptCall, rejectCall, endCall }
 }
 
 // Used by useWebSocket to handle incoming call signals

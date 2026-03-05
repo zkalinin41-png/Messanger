@@ -4,14 +4,19 @@ import { useWebSocket, groupTypingUsers } from '@/composables/useWebSocket'
 import { useGroups } from '@/composables/useGroups'
 import { useAuth } from '@/composables/useAuth'
 import GroupMembersPanel from './GroupMembersPanel.vue'
+import MessageActions from '@/components/MessageActions.vue'
+import MessageReactions from '@/components/MessageReactions.vue'
+import AudioRecorder from '@/components/AudioRecorder.vue'
+import ForwardModal from '@/components/ForwardModal.vue'
+import EmojiPicker from '@/components/EmojiPicker.vue'
 import Button from '@/components/ui/button/Button.vue'
-import { Hash, Users, Send, MessageCircle, CornerUpLeft, X, Paperclip, FileText } from 'lucide-vue-next'
+import { Hash, Users, Send, MessageCircle, X, Paperclip, FileText, Ban, Pin } from 'lucide-vue-next'
 
 const props = defineProps({ groupId: { type: Number, required: true } })
 
 const { sendGroupMessage, sendGroupTyping } = useWebSocket()
 const { groups, groupMessages, groupMembers, fetchGroupDetails } = useGroups()
-const { username } = useAuth()
+const { username, token } = useAuth()
 
 const messageInput = ref('')
 const textareaRef = ref(null)
@@ -19,8 +24,13 @@ const messagesContainer = ref(null)
 const showMembers = ref(false)
 const replyingTo = ref(null)
 const fileInputRef = ref(null)
-const pendingFile = ref(null)   // { url, name, type, size, previewUrl }
+const pendingFile = ref(null)
 const uploadingFile = ref(false)
+const editingMsg = ref(null)
+const editText = ref('')
+const forwardingMsg = ref(null)
+const pinnedMessages = ref([])
+const showPins = ref(false)
 
 const group = computed(() => groups.value.find(g => g.id === props.groupId))
 const messages = computed(() => groupMessages.value[props.groupId] ?? [])
@@ -41,7 +51,32 @@ watch(showMembers, (v) => {
   if (v) fetchGroupDetails(props.groupId)
 })
 
-// Discord-style message grouping — replies always break the group
+// Reset edit mode when switching groups
+watch(() => props.groupId, () => { editingMsg.value = null; fetchPins() }, { immediate: true })
+
+async function fetchPins() {
+  try {
+    const res = await fetch(`/api/groups/${props.groupId}/pins`, { headers: { Authorization: `Bearer ${token.value}` } })
+    const data = await res.json()
+    pinnedMessages.value = data.pins || []
+  } catch { pinnedMessages.value = [] }
+}
+
+async function pinMessage(msg) {
+  try {
+    await fetch(`/api/groups/${props.groupId}/pins/${msg.id}`, { method: 'POST', headers: { Authorization: `Bearer ${token.value}` } })
+    fetchPins()
+  } catch (err) { console.error('Pin error:', err) }
+}
+
+async function unpinMessage(id) {
+  try {
+    await fetch(`/api/groups/${props.groupId}/pins/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token.value}` } })
+    fetchPins()
+  } catch (err) { console.error('Unpin error:', err) }
+}
+
+// Discord-style message grouping
 const messageGroups = computed(() => {
   const result = []
   for (const msg of messages.value) {
@@ -50,6 +85,8 @@ const messageGroups = computed(() => {
       prev &&
       prev.username === msg.username &&
       !msg.reply_to_id &&
+      !msg.deleted &&
+      !(prev.items[prev.items.length - 1]?.deleted) &&
       msg.timestamp - prev.lastTimestamp < 5 * 60 * 1000
     if (canMerge) {
       prev.items.push(msg)
@@ -61,6 +98,7 @@ const messageGroups = computed(() => {
         color: msg.color,
         items: [msg],
         lastTimestamp: msg.timestamp,
+        firstTimestamp: msg.timestamp,
       })
     }
   }
@@ -69,6 +107,24 @@ const messageGroups = computed(() => {
 
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatDateSep(ts) {
+  const d = new Date(ts)
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yesterday = new Date(today - 86400000)
+  const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  if (msgDay.getTime() === today.getTime()) return 'Today'
+  if (msgDay.getTime() === yesterday.getTime()) return 'Yesterday'
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined })
+}
+
+function shouldShowDateSep(idx) {
+  if (idx === 0) return true
+  const prev = messageGroups.value[idx - 1]
+  const curr = messageGroups.value[idx]
+  return new Date(prev.firstTimestamp).toDateString() !== new Date(curr.firstTimestamp).toDateString()
 }
 
 function scrollToBottom() {
@@ -119,7 +175,7 @@ async function handleFileSelect(e) {
     form.append('file', file)
     const res = await fetch('/api/upload', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${useAuth().token.value}` },
+      headers: { Authorization: `Bearer ${token.value}` },
       body: form,
     })
     const data = await res.json()
@@ -143,6 +199,49 @@ function formatFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// ── Edit / Delete ─────────────────────────────────────────────────────────
+function startEdit(msg) {
+  editingMsg.value = msg
+  editText.value = msg.text
+}
+
+function cancelEdit() {
+  editingMsg.value = null
+  editText.value = ''
+}
+
+async function saveEdit() {
+  if (!editingMsg.value || !editText.value.trim()) return
+  try {
+    await fetch(`/api/groups/${props.groupId}/messages/${editingMsg.value.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
+      body: JSON.stringify({ text: editText.value.trim() }),
+    })
+  } catch (err) { console.error('Edit error:', err) }
+  cancelEdit()
+}
+
+async function deleteMessage(msg) {
+  if (!confirm('Delete this message?')) return
+  try {
+    await fetch(`/api/groups/${props.groupId}/messages/${msg.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+  } catch (err) { console.error('Delete error:', err) }
+}
+
+async function toggleReaction({ messageId, emoji, messageType }) {
+  try {
+    await fetch('/api/reactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
+      body: JSON.stringify({ messageId, messageType: messageType || 'group', emoji }),
+    })
+  } catch (err) { console.error('Reaction error:', err) }
 }
 
 // ── Send ────────────────────────────────────────────────────────────────────
@@ -172,6 +271,8 @@ function handleKeydown(e) {
     replyingTo.value = null
   }
 }
+
+const isMine = (name) => name === username.value
 </script>
 
 <template>
@@ -199,6 +300,23 @@ function handleKeydown(e) {
     <!-- Body: messages + optional members panel -->
     <div class="flex flex-1 overflow-hidden">
 
+      <!-- Pinned messages bar -->
+      <div v-if="pinnedMessages.length > 0" class="px-4 py-1.5 border-b border-border bg-muted/30 flex items-center gap-2">
+        <Pin class="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+        <button class="text-xs text-muted-foreground hover:text-foreground transition-colors truncate flex-1 text-left" @click="showPins = !showPins">
+          {{ pinnedMessages.length }} pinned message{{ pinnedMessages.length > 1 ? 's' : '' }}
+        </button>
+      </div>
+
+      <!-- Pinned messages panel -->
+      <div v-if="showPins && pinnedMessages.length > 0" class="border-b border-border bg-muted/20 max-h-32 overflow-y-auto px-4 py-2 space-y-1">
+        <div v-for="pin in pinnedMessages" :key="pin.id" class="flex items-center gap-2 text-xs">
+          <span class="font-semibold" :style="{ color: pin.color }">{{ pin.username }}</span>
+          <span class="text-muted-foreground truncate flex-1">{{ pin.text || '📎 File' }}</span>
+          <button class="text-[10px] text-muted-foreground hover:text-destructive" @click="unpinMessage(pin.message_id)">Unpin</button>
+        </div>
+      </div>
+
       <!-- Messages -->
       <div ref="messagesContainer" class="flex-1 overflow-y-auto px-4 py-4">
 
@@ -207,95 +325,147 @@ function handleKeydown(e) {
           <p class="text-sm">No messages yet — say something!</p>
         </div>
 
-        <div
-          v-for="group in messageGroups"
-          :key="group.id"
-          class="group flex items-start gap-3 px-2 py-1 -mx-2 rounded-lg hover:bg-accent/30 transition-colors"
-        >
-          <!-- Avatar -->
+        <template v-for="(grp, gIdx) in messageGroups" :key="grp.id">
+          <!-- Date separator -->
+          <div v-if="shouldShowDateSep(gIdx)" class="flex items-center gap-3 py-3">
+            <div class="flex-1 h-px bg-border" />
+            <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{{ formatDateSep(grp.firstTimestamp) }}</span>
+            <div class="flex-1 h-px bg-border" />
+          </div>
+
           <div
-            class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5 select-none"
-            :style="{ backgroundColor: group.color }"
+            class="group flex items-start gap-3 px-2 py-1 -mx-2 rounded-lg hover:bg-accent/30 transition-colors"
           >
-            {{ group.username.slice(0, 2).toUpperCase() }}
-          </div>
-
-          <div class="flex-1 min-w-0">
-            <!-- Username + timestamp -->
-            <div class="flex items-baseline gap-2 mb-0.5">
-              <span class="text-sm font-semibold" :style="{ color: group.color }">
-                {{ group.username }}
-              </span>
-              <span class="text-[11px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
-                {{ formatTime(group.items[0].timestamp) }}
-              </span>
-            </div>
-
-            <!-- Messages in group -->
+            <!-- Avatar -->
             <div
-              v-for="item in group.items"
-              :key="item.id"
-              class="group/msg"
+              class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5 select-none"
+              :style="{ backgroundColor: grp.color }"
             >
-              <!-- Reply quote -->
-              <div
-                v-if="item.reply_to_id"
-                class="mb-0.5 flex items-start gap-1.5 pl-1 border-l-2 border-muted-foreground/30 opacity-70 hover:opacity-100 transition-opacity"
-              >
-                <span class="text-xs font-semibold" :style="{ color: group.color }">{{ item.reply_to_username }}</span>
-                <p class="text-xs text-muted-foreground truncate">{{ item.reply_to_text || '📎 File' }}</p>
+              {{ grp.username.slice(0, 2).toUpperCase() }}
+            </div>
+
+            <div class="flex-1 min-w-0">
+              <!-- Username + timestamp -->
+              <div class="flex items-baseline gap-2 mb-0.5">
+                <span class="text-sm font-semibold" :style="{ color: grp.color }">
+                  {{ grp.username }}
+                </span>
+                <span class="text-[11px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+                  {{ formatTime(grp.items[0].timestamp) }}
+                </span>
               </div>
 
-              <div class="flex items-end gap-2">
-                <div class="flex-1 min-w-0">
-                  <!-- File attachment -->
-                  <div v-if="item.file_url" class="mb-1">
-                    <img
-                      v-if="item.file_type?.startsWith('image/')"
-                      :src="item.file_url"
-                      :alt="item.file_name"
-                      class="max-w-[320px] max-h-64 rounded-xl object-contain block"
-                    />
-                    <video
-                      v-else-if="item.file_type?.startsWith('video/')"
-                      :src="item.file_url"
-                      controls
-                      class="max-w-[320px] max-h-64 rounded-xl block"
-                    />
-                    <a
-                      v-else
-                      :href="item.file_url"
-                      :download="item.file_name"
-                      class="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-muted/60 hover:bg-muted transition-colors max-w-[320px]"
-                    >
-                      <FileText class="w-4 h-4 flex-shrink-0 text-muted-foreground" />
-                      <div class="min-w-0">
-                        <p class="text-xs font-medium truncate">{{ item.file_name }}</p>
-                        <p class="text-[10px] text-muted-foreground">{{ formatFileSize(item.file_size) }}</p>
-                      </div>
-                    </a>
+              <!-- Messages in group -->
+              <div
+                v-for="item in grp.items"
+                :key="item.id"
+                class="group/msg"
+              >
+                <!-- Reply quote -->
+                <div
+                  v-if="item.reply_to_id"
+                  class="mb-0.5 flex items-start gap-1.5 pl-1 border-l-2 border-muted-foreground/30 opacity-70 hover:opacity-100 transition-opacity"
+                >
+                  <span class="text-xs font-semibold" :style="{ color: grp.color }">{{ item.reply_to_username }}</span>
+                  <p class="text-xs text-muted-foreground truncate">{{ item.reply_to_text || '📎 File' }}</p>
+                </div>
+
+                <!-- Deleted message -->
+                <div v-if="item.deleted" class="flex items-center gap-1 py-0.5 text-sm italic opacity-40 text-muted-foreground">
+                  <Ban class="w-3 h-3" />
+                  Message deleted
+                </div>
+
+                <!-- Edit mode -->
+                <div v-else-if="editingMsg?.id === item.id" class="flex flex-col gap-1 max-w-md">
+                  <textarea
+                    v-model="editText"
+                    class="rounded-xl border border-violet-500 bg-background px-3 py-2 text-sm outline-none resize-none leading-relaxed"
+                    rows="2"
+                    @keydown.enter.prevent="saveEdit"
+                    @keydown.escape="cancelEdit"
+                  />
+                  <div class="flex gap-1 justify-end">
+                    <button class="text-[10px] px-2 py-0.5 rounded text-muted-foreground hover:text-foreground" @click="cancelEdit">Cancel</button>
+                    <button class="text-[10px] px-2 py-0.5 rounded bg-violet-600 text-white hover:bg-violet-700" @click="saveEdit">Save</button>
                   </div>
-                  <p v-if="item.text" class="text-sm leading-relaxed break-words whitespace-pre-wrap">{{ item.text }}</p>
                 </div>
-                <div class="flex items-center gap-1 opacity-0 group-hover/msg:opacity-100 transition-opacity flex-shrink-0">
-                  <span
-                    v-if="group.items.length > 1"
-                    class="text-[10px] text-muted-foreground pb-px whitespace-nowrap"
-                  >
-                    {{ formatTime(item.timestamp) }}
-                  </span>
-                  <button
-                    class="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
-                    title="Reply"
-                    @click="replyingTo = { id: item.id, text: item.text || '', file_name: item.file_name, username: group.username, from_user: group.username }"
-                  >
-                    <CornerUpLeft class="w-3 h-3" />
-                  </button>
+
+                <!-- Normal message content -->
+                <div v-else class="flex items-end gap-2">
+                  <div class="flex-1 min-w-0">
+                    <!-- File attachment -->
+                    <div v-if="item.file_url" class="mb-1">
+                      <img
+                        v-if="item.file_type?.startsWith('image/')"
+                        :src="item.file_url"
+                        :alt="item.file_name"
+                        class="max-w-[320px] max-h-64 rounded-xl object-contain block"
+                      />
+                      <video
+                        v-else-if="item.file_type?.startsWith('video/')"
+                        :src="item.file_url"
+                        controls
+                        class="max-w-[320px] max-h-64 rounded-xl block"
+                      />
+                      <audio
+                        v-else-if="item.file_type?.startsWith('audio/')"
+                        :src="item.file_url"
+                        controls
+                        class="max-w-[280px] rounded-xl block"
+                      />
+                      <a
+                        v-else
+                        :href="item.file_url"
+                        :download="item.file_name"
+                        class="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-muted/60 hover:bg-muted transition-colors max-w-[320px]"
+                      >
+                        <FileText class="w-4 h-4 flex-shrink-0 text-muted-foreground" />
+                        <div class="min-w-0">
+                          <p class="text-xs font-medium truncate">{{ item.file_name }}</p>
+                          <p class="text-[10px] text-muted-foreground">{{ formatFileSize(item.file_size) }}</p>
+                        </div>
+                      </a>
+                    </div>
+                    <p v-if="item.text" class="text-sm leading-relaxed break-words whitespace-pre-wrap">
+                      {{ item.text }}
+                      <span v-if="item.edited" class="text-[9px] text-muted-foreground/50 italic ml-1">(edited)</span>
+                    </p>
+                  </div>
+                  <div class="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity flex-shrink-0">
+                    <span
+                      v-if="grp.items.length > 1"
+                      class="text-[10px] text-muted-foreground pb-px whitespace-nowrap"
+                    >
+                      {{ formatTime(item.timestamp) }}
+                    </span>
+                    <MessageActions
+                      :msg="{ ...item, username: grp.username }"
+                      :is-mine="isMine(grp.username)"
+                      message-type="group"
+                      :show-pin="true"
+                      @reply="replyingTo = { id: item.id, text: item.text || '', file_name: item.file_name, username: grp.username, from_user: grp.username }"
+                      @edit="startEdit"
+                      @delete="deleteMessage"
+                      @react="toggleReaction"
+                      @forward="(m) => forwardingMsg = m"
+                      @pin="pinMessage"
+                    />
+                  </div>
                 </div>
+
+                <!-- Reactions -->
+                <MessageReactions
+                  v-if="!item.deleted"
+                  :reactions="item.reactions || []"
+                  :message-id="item.id"
+                  message-type="group"
+                  @react="toggleReaction"
+                />
               </div>
             </div>
           </div>
-        </div>
+        </template>
 
         <!-- Group typing indicator -->
         <div v-if="typingText" class="flex items-center gap-2 px-2 py-1 mt-1">
@@ -362,6 +532,7 @@ function handleKeydown(e) {
         >
           <Paperclip class="w-4 h-4" />
         </button>
+        <EmojiPicker @select="(e) => { messageInput += e }" />
         <textarea
           ref="textareaRef"
           v-model="messageInput"
@@ -371,6 +542,7 @@ function handleKeydown(e) {
           @keydown="handleKeydown"
           @input="handleInputChange"
         />
+        <AudioRecorder @recorded="(file) => { pendingFile = file; handleSend() }" />
         <Button
           size="icon"
           class="h-8 w-8 flex-shrink-0 mb-0.5"
@@ -383,4 +555,13 @@ function handleKeydown(e) {
     </div>
 
   </div>
+
+  <!-- Forward modal -->
+  <ForwardModal
+    v-if="forwardingMsg"
+    :message-id="forwardingMsg.id"
+    message-type="group"
+    @close="forwardingMsg = null"
+    @forwarded="forwardingMsg = null"
+  />
 </template>
