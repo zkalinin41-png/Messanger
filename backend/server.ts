@@ -3,7 +3,7 @@ import express, { type Request, type Response } from 'express'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import cors from 'cors'
-import Database from 'better-sqlite3'
+import { dbExec, dbGet, dbAll, dbRun, dbColumnExists } from './database.js'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import nodemailer from 'nodemailer'
@@ -72,135 +72,113 @@ function isOnline(username: string): boolean {
   return false
 }
 
-// --- Database setup ---
-const db: Database.Database = new Database(join(__dirname, 'chat.db'))
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`)
-
-// Safe migrations — only add columns that don't exist yet
-const existingCols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c: any) => c.name))
-if (!existingCols.has('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT')
-if (!existingCols.has('email_verified')) db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0')
-if (!existingCols.has('verification_token')) db.exec('ALTER TABLE users ADD COLUMN verification_token TEXT')
-if (!existingCols.has('verification_expires')) db.exec('ALTER TABLE users ADD COLUMN verification_expires INTEGER')
-if (!existingCols.has('reset_token')) db.exec('ALTER TABLE users ADD COLUMN reset_token TEXT')
-if (!existingCols.has('reset_expires')) db.exec('ALTER TABLE users ADD COLUMN reset_expires INTEGER')
-
-// Group tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS chat_groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    creator TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  )`)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS group_members (
-    group_id INTEGER NOT NULL,
-    username TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'member',
-    last_seen_at INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (group_id, username),
-    FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE
-  )`)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS group_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id INTEGER NOT NULL,
-    username TEXT NOT NULL,
-    text TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE
-  )`)
-db.exec('PRAGMA foreign_keys = ON')
-
-// users: last_seen_at + avatar
-if (!existingCols.has('last_seen_at')) db.exec('ALTER TABLE users ADD COLUMN last_seen_at INTEGER')
-if (!existingCols.has('avatar_url')) db.exec('ALTER TABLE users ADD COLUMN avatar_url TEXT')
-
-// group_messages: reply columns + file columns
-const gmCols = new Set(db.prepare('PRAGMA table_info(group_messages)').all().map((c: any) => c.name))
-if (!gmCols.has('reply_to_id')) db.exec('ALTER TABLE group_messages ADD COLUMN reply_to_id INTEGER')
-if (!gmCols.has('reply_to_text')) db.exec('ALTER TABLE group_messages ADD COLUMN reply_to_text TEXT')
-if (!gmCols.has('reply_to_username')) db.exec('ALTER TABLE group_messages ADD COLUMN reply_to_username TEXT')
-if (!gmCols.has('file_url')) db.exec('ALTER TABLE group_messages ADD COLUMN file_url TEXT')
-if (!gmCols.has('file_name')) db.exec('ALTER TABLE group_messages ADD COLUMN file_name TEXT')
-if (!gmCols.has('file_type')) db.exec('ALTER TABLE group_messages ADD COLUMN file_type TEXT')
-if (!gmCols.has('file_size')) db.exec('ALTER TABLE group_messages ADD COLUMN file_size INTEGER')
-
-// DM messages table
-db.exec(`
-  CREATE TABLE IF NOT EXISTS dm_messages (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_user   TEXT    NOT NULL,
-    to_user     TEXT    NOT NULL,
-    text        TEXT    NOT NULL DEFAULT '',
-    timestamp   INTEGER NOT NULL,
-    status      TEXT    NOT NULL DEFAULT 'sent',
-    reply_to_id       INTEGER,
-    reply_to_text     TEXT,
-    reply_to_username TEXT
-  )`)
-db.exec('CREATE INDEX IF NOT EXISTS idx_dm_pair ON dm_messages (from_user, to_user, timestamp)')
-db.exec('CREATE INDEX IF NOT EXISTS idx_dm_to ON dm_messages (to_user, status)')
-
-// dm_messages: file columns + edit/delete
-const dmCols = new Set(db.prepare('PRAGMA table_info(dm_messages)').all().map((c: any) => c.name))
-if (!dmCols.has('file_url')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_url TEXT')
-if (!dmCols.has('file_name')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_name TEXT')
-if (!dmCols.has('file_type')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_type TEXT')
-if (!dmCols.has('file_size')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_size INTEGER')
-if (!dmCols.has('edited')) db.exec('ALTER TABLE dm_messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0')
-if (!dmCols.has('deleted')) db.exec('ALTER TABLE dm_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0')
-
-// group_messages: edit/delete columns
-if (!gmCols.has('edited')) db.exec('ALTER TABLE group_messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0')
-if (!gmCols.has('deleted')) db.exec('ALTER TABLE group_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0')
-
-// Reactions table
-db.exec(`
-  CREATE TABLE IF NOT EXISTS message_reactions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    message_id  INTEGER NOT NULL,
-    message_type TEXT NOT NULL,
-    username    TEXT NOT NULL,
-    emoji       TEXT NOT NULL,
-    created_at  INTEGER NOT NULL,
-    UNIQUE(message_id, message_type, username, emoji)
-  )
-`)
-db.exec('CREATE INDEX IF NOT EXISTS idx_reactions ON message_reactions (message_id, message_type)')
-
-// Pinned messages table
-db.exec(`
-  CREATE TABLE IF NOT EXISTS pinned_messages (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id    INTEGER NOT NULL,
-    message_id  INTEGER NOT NULL,
-    pinned_by   TEXT NOT NULL,
-    pinned_at   INTEGER NOT NULL,
-    UNIQUE(group_id, message_id)
-  )
-`)
-
-// Blocked users table
-db.exec(`
-  CREATE TABLE IF NOT EXISTS blocked_users (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    blocker     TEXT NOT NULL,
-    blocked     TEXT NOT NULL,
-    created_at  INTEGER NOT NULL,
-    UNIQUE(blocker, blocked)
-  )
-`)
+// --- Database setup (PostgreSQL) ---
+async function initDb() {
+  await dbExec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      email TEXT,
+      email_verified INTEGER NOT NULL DEFAULT 0,
+      verification_token TEXT,
+      verification_expires BIGINT,
+      reset_token TEXT,
+      reset_expires BIGINT,
+      last_seen_at BIGINT,
+      avatar_url TEXT
+    )
+  `)
+  await dbExec(`
+    CREATE TABLE IF NOT EXISTS chat_groups (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      creator TEXT NOT NULL,
+      created_at BIGINT NOT NULL
+    )
+  `)
+  await dbExec(`
+    CREATE TABLE IF NOT EXISTS group_members (
+      group_id INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+      username TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
+      last_seen_at BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (group_id, username)
+    )
+  `)
+  await dbExec(`
+    CREATE TABLE IF NOT EXISTS group_messages (
+      id SERIAL PRIMARY KEY,
+      group_id INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+      username TEXT NOT NULL,
+      text TEXT NOT NULL,
+      timestamp BIGINT NOT NULL,
+      reply_to_id INTEGER,
+      reply_to_text TEXT,
+      reply_to_username TEXT,
+      file_url TEXT,
+      file_name TEXT,
+      file_type TEXT,
+      file_size INTEGER,
+      edited INTEGER NOT NULL DEFAULT 0,
+      deleted INTEGER NOT NULL DEFAULT 0
+    )
+  `)
+  await dbExec(`
+    CREATE TABLE IF NOT EXISTS dm_messages (
+      id SERIAL PRIMARY KEY,
+      from_user TEXT NOT NULL,
+      to_user TEXT NOT NULL,
+      text TEXT NOT NULL DEFAULT '',
+      timestamp BIGINT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'sent',
+      reply_to_id INTEGER,
+      reply_to_text TEXT,
+      reply_to_username TEXT,
+      file_url TEXT,
+      file_name TEXT,
+      file_type TEXT,
+      file_size INTEGER,
+      edited INTEGER NOT NULL DEFAULT 0,
+      deleted INTEGER NOT NULL DEFAULT 0
+    )
+  `)
+  await dbExec('CREATE INDEX IF NOT EXISTS idx_dm_pair ON dm_messages (from_user, to_user, timestamp)')
+  await dbExec('CREATE INDEX IF NOT EXISTS idx_dm_to ON dm_messages (to_user, status)')
+  await dbExec(`
+    CREATE TABLE IF NOT EXISTS message_reactions (
+      id SERIAL PRIMARY KEY,
+      message_id INTEGER NOT NULL,
+      message_type TEXT NOT NULL,
+      username TEXT NOT NULL,
+      emoji TEXT NOT NULL,
+      created_at BIGINT NOT NULL,
+      UNIQUE(message_id, message_type, username, emoji)
+    )
+  `)
+  await dbExec('CREATE INDEX IF NOT EXISTS idx_reactions ON message_reactions (message_id, message_type)')
+  await dbExec(`
+    CREATE TABLE IF NOT EXISTS pinned_messages (
+      id SERIAL PRIMARY KEY,
+      group_id INTEGER NOT NULL,
+      message_id INTEGER NOT NULL,
+      pinned_by TEXT NOT NULL,
+      pinned_at BIGINT NOT NULL,
+      UNIQUE(group_id, message_id)
+    )
+  `)
+  await dbExec(`
+    CREATE TABLE IF NOT EXISTS blocked_users (
+      id SERIAL PRIMARY KEY,
+      blocker TEXT NOT NULL,
+      blocked TEXT NOT NULL,
+      created_at BIGINT NOT NULL,
+      UNIQUE(blocker, blocked)
+    )
+  `)
+}
 
 // --- Email (Gmail SMTP) ---
 const GMAIL_USER = process.env.GMAIL_USER || 'e.kalinin135@gmail.com'
@@ -323,16 +301,16 @@ app.post('/api/register', async (req: Request, res: Response) => {
   }
 
   // Clean up legacy accounts (pre-email, unverified, same username)
-  const stale = db.prepare('SELECT id FROM users WHERE username = ? AND email IS NULL AND email_verified = 0').get(name) as any
-  if (stale) db.prepare('DELETE FROM users WHERE id = ?').run(stale.id)
+  const stale = await dbGet('SELECT id FROM users WHERE username = ? AND email IS NULL AND email_verified = 0', name) as any
+  if (stale) await dbRun('DELETE FROM users WHERE id = ?', stale.id)
 
   // Check username uniqueness
-  if (db.prepare('SELECT id FROM users WHERE username = ?').get(name) as any) {
+  if (await dbGet('SELECT id FROM users WHERE username = ?', name) as any) {
     return res.status(409).json({ error: 'Username already taken' })
   }
 
   // Check email uniqueness
-  if (db.prepare('SELECT id FROM users WHERE email = ?').get(mail) as any) {
+  if (await dbGet('SELECT id FROM users WHERE email = ?', mail) as any) {
     return res.status(409).json({ error: 'Email already registered' })
   }
 
@@ -341,12 +319,12 @@ app.post('/api/register', async (req: Request, res: Response) => {
   const expires = Date.now() + 24 * 60 * 60 * 1000
 
   try {
-    db.prepare(`
+    await dbRun(`
       INSERT INTO users (username, email, password_hash, verification_token, verification_expires)
       VALUES (?, ?, ?, ?, ?)
-    `).run(name, mail, hash, token, expires)
+    `, name, mail, hash, token, expires)
   } catch (err: any) {
-    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+    if (err.code === '23505') {
       return res.status(409).json({ error: 'Username already taken' })
     }
     return res.status(500).json({ error: 'Server error' })
@@ -363,12 +341,12 @@ app.post('/api/register', async (req: Request, res: Response) => {
 })
 
 // Verify email (link from email)
-app.get('/api/verify-email', (req: Request, res: Response) => {
+app.get('/api/verify-email', async (req: Request, res: Response) => {
   const { token } = req.query
   const appUrl = getAppUrl(req)
   if (!token) return res.send(simpleHtmlPage('Error', 'Invalid link', 'This verification link is not valid.', appUrl))
 
-  const user = db.prepare('SELECT * FROM users WHERE verification_token = ?').get(token) as any
+  const user = await dbGet('SELECT * FROM users WHERE verification_token = ?', token) as any
 
   if (!user) {
     return res.send(simpleHtmlPage('Error', 'Link not found', 'This link is invalid or was already used.', appUrl))
@@ -377,7 +355,7 @@ app.get('/api/verify-email', (req: Request, res: Response) => {
     return res.send(simpleHtmlPage('Link expired', 'Link expired', 'This verification link has expired. Please request a new one from the app.', appUrl))
   }
 
-  db.prepare('UPDATE users SET email_verified = 1, verification_token = NULL, verification_expires = NULL WHERE id = ?').run(user.id)
+  await dbRun('UPDATE users SET email_verified = 1, verification_token = NULL, verification_expires = NULL WHERE id = ?', user.id)
 
   res.send(simpleHtmlPage('Email verified!', '✓ Email verified!', 'Your account is now active. You can close this tab and sign in.', appUrl))
 })
@@ -387,13 +365,13 @@ app.post('/api/resend-verification', async (req: Request, res: Response) => {
   const mail = String(req.body.email || '').trim().toLowerCase()
   if (!mail) return res.status(400).json({ error: 'Email is required' })
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(mail) as any
+  const user = await dbGet('SELECT * FROM users WHERE email = ?', mail) as any
   if (!user) return res.status(404).json({ error: 'No account found with that email' })
   if (user.email_verified) return res.status(400).json({ error: 'Email is already verified' })
 
   const token = randomUUID()
   const expires = Date.now() + 24 * 60 * 60 * 1000
-  db.prepare('UPDATE users SET verification_token = ?, verification_expires = ? WHERE id = ?').run(token, expires, user.id)
+  await dbRun('UPDATE users SET verification_token = ?, verification_expires = ? WHERE id = ?', token, expires, user.id)
 
   const verifyUrl = `${req.protocol}://${req.get('host')}/api/verify-email?token=${token}`
   try {
@@ -413,12 +391,12 @@ app.post('/api/forgot-password', async (req: Request, res: Response) => {
 
   if (!mail) return res.json(generic)
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(mail) as any
+  const user = await dbGet('SELECT * FROM users WHERE email = ?', mail) as any
   if (!user) return res.json(generic)
 
   const token = randomUUID()
   const expires = Date.now() + 60 * 60 * 1000 // 1 hour
-  db.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').run(token, expires, user.id)
+  await dbRun('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?', token, expires, user.id)
 
   const resetUrl = `${getAppUrl(req)}?reset_token=${token}`
   try {
@@ -431,7 +409,7 @@ app.post('/api/forgot-password', async (req: Request, res: Response) => {
 })
 
 // Reset password
-app.post('/api/reset-password', (req: Request, res: Response) => {
+app.post('/api/reset-password', async (req: Request, res: Response) => {
   const { token, newPassword } = req.body
   if (!token || !newPassword) {
     return res.status(400).json({ error: 'Token and new password are required' })
@@ -440,18 +418,18 @@ app.post('/api/reset-password', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Password must be at least 6 characters' })
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE reset_token = ?').get(token) as any
+  const user = await dbGet('SELECT * FROM users WHERE reset_token = ?', token) as any
   if (!user) return res.status(400).json({ error: 'Invalid or expired reset link' })
   if (user.reset_expires < Date.now()) return res.status(400).json({ error: 'Reset link has expired. Please request a new one.' })
 
   const hash = bcrypt.hashSync(String(newPassword), 10)
-  db.prepare('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?').run(hash, user.id)
+  await dbRun('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?', hash, user.id)
 
   res.json({ message: 'Password updated. You can now sign in.' })
 })
 
 // Change password
-app.post('/api/change-password', (req: Request, res: Response) => {
+app.post('/api/change-password', async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' })
@@ -469,13 +447,13 @@ app.post('/api/change-password', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'New password must be at least 6 characters' })
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(payload.username) as any
+  const user = await dbGet('SELECT * FROM users WHERE username = ?', payload.username) as any
   if (!user || !bcrypt.compareSync(String(currentPassword), user.password_hash)) {
     return res.status(400).json({ error: 'Current password is incorrect' })
   }
 
   const hash = bcrypt.hashSync(String(newPassword), 10)
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, user.id)
+  await dbRun('UPDATE users SET password_hash = ? WHERE id = ?', hash, user.id)
   res.json({ message: 'Password updated successfully' })
 })
 
@@ -498,7 +476,7 @@ app.post('/api/video/token', async (req: Request, res: Response) => {
 })
 
 // File upload
-app.post('/api/upload', upload.single('file'), (req: Request, res: Response) => {
+app.post('/api/upload', upload.single('file'), async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   if (!req.file) return res.status(400).json({ error: 'No file provided' })
@@ -511,14 +489,14 @@ app.post('/api/upload', upload.single('file'), (req: Request, res: Response) => 
 })
 
 // Login
-app.get('/api/check-username', (req: Request, res: Response) => {
+app.get('/api/check-username', async (req: Request, res: Response) => {
   const name = String(req.query.u || '').trim()
   if (name.length < 2) return res.json({ available: false })
-  const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(name) as any
+  const exists = await dbGet('SELECT id FROM users WHERE username = ?', name) as any
   res.json({ available: !exists })
 })
 
-app.post('/api/login', (req: Request, res: Response) => {
+app.post('/api/login', async (req: Request, res: Response) => {
   const { username, password } = req.body
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' })
@@ -526,8 +504,8 @@ app.post('/api/login', (req: Request, res: Response) => {
 
   const input = String(username).trim()
   const user = input.includes('@')
-    ? db.prepare('SELECT * FROM users WHERE email = ?').get(input.toLowerCase() as any)
-    : db.prepare('SELECT * FROM users WHERE username = ?').get(input) as any
+    ? await dbGet('SELECT * FROM users WHERE email = ?', input.toLowerCase() as any)
+    : await dbGet('SELECT * FROM users WHERE username = ?', input) as any
   if (!user || !bcrypt.compareSync(String(password), user.password_hash)) {
     return res.status(401).json({ error: 'Invalid username or password' })
   }
@@ -545,10 +523,10 @@ app.post('/api/login', (req: Request, res: Response) => {
 
 // ── Group REST API ──
 
-app.get('/api/groups', (req: Request, res: Response) => {
+app.get('/api/groups', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const rows = db.prepare(`
+  const rows = await dbAll(`
     SELECT g.id, g.name, g.description, g.creator, gm.role,
       (SELECT COUNT(*) FROM group_messages
        WHERE group_id = g.id AND timestamp > gm.last_seen_at AND username != ?) AS unread_count,
@@ -557,11 +535,11 @@ app.get('/api/groups', (req: Request, res: Response) => {
     JOIN chat_groups g ON g.id = gm.group_id
     WHERE gm.username = ?
     ORDER BY g.created_at DESC
-  `).all(auth.username, auth.username)
+  `, auth.username, auth.username)
   res.json({ groups: rows })
 })
 
-app.post('/api/groups', (req: Request, res: Response) => {
+app.post('/api/groups', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const name = String(req.body.name || '').trim()
@@ -569,149 +547,152 @@ app.post('/api/groups', (req: Request, res: Response) => {
   if (!name) return res.status(400).json({ error: 'Group name is required' })
   if (name.length > 64) return res.status(400).json({ error: 'Name too long (max 64 chars)' })
   const now = Date.now()
-  const result = db.prepare(
-    'INSERT INTO chat_groups (name, description, creator, created_at) VALUES (?, ?, ?, ?)'
-  ).run(name, description, auth.username, now)
+  const result = await dbRun(
+    'INSERT INTO chat_groups (name, description, creator, created_at) VALUES (?, ?, ?, ?)',
+    name, description, auth.username, now
+  )
   const groupId = result.lastInsertRowid
-  db.prepare('INSERT INTO group_members (group_id, username, role) VALUES (?, ?, ?)').run(groupId, auth.username, 'admin')
+  await dbRun('INSERT INTO group_members (group_id, username, role) VALUES (?, ?, ?)', groupId, auth.username, 'admin')
   res.json({ group: { id: groupId, name, description, creator: auth.username, role: 'admin', unread_count: 0, member_count: 1, created_at: now } })
 })
 
-app.get('/api/groups/:id', (req: Request, res: Response) => {
+app.get('/api/groups/:id', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
+  const membership = await dbGet('SELECT role FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
-  const group = db.prepare('SELECT * FROM chat_groups WHERE id = ?').get(groupId) as any
+  const group = await dbGet('SELECT * FROM chat_groups WHERE id = ?', groupId) as any
   if (!group) return res.status(404).json({ error: 'Group not found' })
-  const members = db.prepare(
-    'SELECT username, role FROM group_members WHERE group_id = ? ORDER BY role DESC, username ASC'
-  ).all(groupId)
+  const members = await dbAll(
+    'SELECT username, role FROM group_members WHERE group_id = ? ORDER BY role DESC, username ASC',
+    groupId
+  )
   res.json({ group: { ...group, role: membership.role }, members })
 })
 
-app.put('/api/groups/:id', (req: Request, res: Response) => {
+app.put('/api/groups/:id', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
+  const membership = await dbGet('SELECT role FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
   if (membership.role !== 'admin') return res.status(403).json({ error: 'Admins only' })
   const name = String(req.body.name || '').trim()
   const description = String(req.body.description || '').trim()
   if (!name) return res.status(400).json({ error: 'Group name is required' })
-  db.prepare('UPDATE chat_groups SET name = ?, description = ? WHERE id = ?').run(name, description, groupId)
-  broadcastToGroup(groupId, { type: 'group_updated', groupId, name, description })
+  await dbRun('UPDATE chat_groups SET name = ?, description = ? WHERE id = ?', name, description, groupId)
+  await broadcastToGroup(groupId, { type: 'group_updated', groupId, name, description })
   res.json({ message: 'Updated' })
 })
 
-app.delete('/api/groups/:id', (req: Request, res: Response) => {
+app.delete('/api/groups/:id', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId) as any
+  const group = await dbGet('SELECT creator FROM chat_groups WHERE id = ?', groupId) as any
   if (!group) return res.status(404).json({ error: 'Group not found' })
   if (group.creator !== auth.username) return res.status(403).json({ error: 'Only the creator can delete this group' })
-  const members = db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]
-  db.prepare('DELETE FROM chat_groups WHERE id = ?').run(groupId)
+  const members = await dbAll('SELECT username FROM group_members WHERE group_id = ?', groupId) as any[]
+  await dbRun('DELETE FROM chat_groups WHERE id = ?', groupId)
   for (const m of members) sendToUser(m.username, { type: 'group_deleted', groupId })
   res.json({ message: 'Group deleted' })
 })
 
-app.get('/api/groups/:id/messages', (req: Request, res: Response) => {
+app.get('/api/groups/:id/messages', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const membership = db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
+  const membership = await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
-  const msgs = db.prepare('SELECT * FROM group_messages WHERE group_id = ? ORDER BY timestamp ASC').all(groupId) as any[]
-  db.prepare('UPDATE group_members SET last_seen_at = ? WHERE group_id = ? AND username = ?').run(Date.now(), groupId, auth.username)
-  res.json({ messages: msgs.map((m: any) => ({ ...m, color: usernameColor(m.username), reactions: getReactions(m.id, 'group') })) })
+  const msgs = await dbAll('SELECT * FROM group_messages WHERE group_id = ? ORDER BY timestamp ASC', groupId) as any[]
+  await dbRun('UPDATE group_members SET last_seen_at = ? WHERE group_id = ? AND username = ?', Date.now(), groupId, auth.username)
+  const messagesWithReactions = await Promise.all(msgs.map(async (m: any) => ({ ...m, color: usernameColor(m.username), reactions: await getReactions(m.id, 'group') })))
+  res.json({ messages: messagesWithReactions })
 })
 
-app.post('/api/groups/:id/members', (req: Request, res: Response) => {
+app.post('/api/groups/:id/members', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
+  const membership = await dbGet('SELECT role FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
   if (membership.role !== 'admin') return res.status(403).json({ error: 'Admins only' })
   const targetName = String(req.body.username || '').trim()
   if (!targetName) return res.status(400).json({ error: 'Username is required' })
-  const target = db.prepare('SELECT username FROM users WHERE username = ? AND email_verified = 1').get(targetName) as any
+  const target = await dbGet('SELECT username FROM users WHERE username = ? AND email_verified = 1', targetName) as any
   if (!target) return res.status(404).json({ error: 'User not found' })
-  if (db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, target.username) as any) {
+  if (await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, target.username) as any) {
     return res.status(409).json({ error: 'User is already a member' })
   }
-  db.prepare('INSERT INTO group_members (group_id, username, role) VALUES (?, ?, ?)').run(groupId, target.username, 'member')
+  await dbRun('INSERT INTO group_members (group_id, username, role) VALUES (?, ?, ?)', groupId, target.username, 'member')
   sendToUser(target.username, { type: 'groups_refresh' })
-  broadcastToGroup(groupId, { type: 'group_member_update', groupId })
+  await broadcastToGroup(groupId, { type: 'group_member_update', groupId })
   res.json({ message: `${target.username} added` })
 })
 
-app.delete('/api/groups/:id/members/:username', (req: Request, res: Response) => {
+app.delete('/api/groups/:id/members/:username', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const targetName = String(req.params.username)
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
+  const membership = await dbGet('SELECT role FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
   if (membership.role !== 'admin') return res.status(403).json({ error: 'Admins only' })
-  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId) as any
+  const group = await dbGet('SELECT creator FROM chat_groups WHERE id = ?', groupId) as any
   if (group?.creator === targetName) return res.status(403).json({ error: "Can't remove the group creator" })
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, targetName) as any) {
+  if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, targetName) as any) {
     return res.status(404).json({ error: 'Member not found' })
   }
-  db.prepare('DELETE FROM group_members WHERE group_id = ? AND username = ?').run(groupId, targetName)
+  await dbRun('DELETE FROM group_members WHERE group_id = ? AND username = ?', groupId, targetName)
   sendToUser(targetName, { type: 'group_deleted', groupId })
-  broadcastToGroup(groupId, { type: 'group_member_update', groupId })
+  await broadcastToGroup(groupId, { type: 'group_member_update', groupId })
   res.json({ message: `${targetName} removed` })
 })
 
-app.delete('/api/groups/:id/leave', (req: Request, res: Response) => {
+app.delete('/api/groups/:id/leave', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId) as any
+  const group = await dbGet('SELECT creator FROM chat_groups WHERE id = ?', groupId) as any
   if (!group) return res.status(404).json({ error: 'Group not found' })
   if (group.creator === auth.username) return res.status(403).json({ error: 'Creator cannot leave — delete the group instead' })
-  db.prepare('DELETE FROM group_members WHERE group_id = ? AND username = ?').run(groupId, auth.username)
-  broadcastToGroup(groupId, { type: 'group_member_update', groupId })
+  await dbRun('DELETE FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username)
+  await broadcastToGroup(groupId, { type: 'group_member_update', groupId })
   res.json({ message: 'You left the group' })
 })
 
-app.put('/api/groups/:id/members/:username/role', (req: Request, res: Response) => {
+app.put('/api/groups/:id/members/:username/role', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const targetName = String(req.params.username)
-  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId) as any
+  const group = await dbGet('SELECT creator FROM chat_groups WHERE id = ?', groupId) as any
   if (!group) return res.status(404).json({ error: 'Group not found' })
   if (group.creator !== auth.username) return res.status(403).json({ error: 'Only the creator can change roles' })
   if (targetName === auth.username) return res.status(400).json({ error: "Can't change your own role" })
   const role = req.body.role
   if (!['admin', 'member'].includes(role)) return res.status(400).json({ error: 'Role must be admin or member' })
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, targetName) as any) {
+  if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, targetName) as any) {
     return res.status(404).json({ error: 'Member not found' })
   }
-  db.prepare('UPDATE group_members SET role = ? WHERE group_id = ? AND username = ?').run(role, groupId, targetName)
-  broadcastToGroup(groupId, { type: 'group_member_update', groupId })
+  await dbRun('UPDATE group_members SET role = ? WHERE group_id = ? AND username = ?', role, groupId, targetName)
+  await broadcastToGroup(groupId, { type: 'group_member_update', groupId })
   res.json({ message: 'Role updated' })
 })
 
 // ── DM REST API ──
 
-app.get('/api/users/search', (req: Request, res: Response) => {
+app.get('/api/users/search', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const q = String(req.query.q || '').trim()
   if (!q) return res.json({ users: [] })
-  const users = db.prepare(`
+  const users = (await dbAll(`
     SELECT username FROM users
     WHERE username LIKE ? AND username != ? AND email_verified = 1
     LIMIT 10
-  `).all(`%${q}%`, auth.username).map((u: any) => ({
+  `, `%${q}%`, auth.username)).map((u: any) => ({
     username: u.username,
     color: usernameColor(u.username),
     online: isOnline(u.username),
@@ -719,24 +700,26 @@ app.get('/api/users/search', (req: Request, res: Response) => {
   res.json({ users })
 })
 
-app.get('/api/dms', (req: Request, res: Response) => {
+app.get('/api/dms', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const partners = db.prepare(`
+  const partners = (await dbAll(`
     SELECT DISTINCT CASE WHEN from_user = ? THEN to_user ELSE from_user END AS partner
     FROM dm_messages WHERE from_user = ? OR to_user = ?
-  `).all(auth.username, auth.username, auth.username).map((r: any) => r.partner)
-  const conversations = partners.map((partner: any) => {
-    const last = db.prepare(`
+  `, auth.username, auth.username, auth.username)).map((r: any) => r.partner)
+  const conversations = []
+  for (const partner of partners) {
+    const last = await dbGet(`
       SELECT text, timestamp FROM dm_messages
       WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)
       ORDER BY timestamp DESC LIMIT 1
-    `).get(auth.username, partner, partner, auth.username) as any
-    const unread = (db.prepare(
-      "SELECT COUNT(*) as n FROM dm_messages WHERE from_user = ? AND to_user = ? AND status != 'read'"
-    ).get(partner, auth.username) as any)?.n ?? 0
-    const user = db.prepare('SELECT last_seen_at FROM users WHERE username = ?').get(partner) as any
-    return {
+    `, auth.username, partner, partner, auth.username) as any
+    const unread = (await dbGet(
+      "SELECT COUNT(*) as n FROM dm_messages WHERE from_user = ? AND to_user = ? AND status != 'read'",
+      partner, auth.username
+    ) as any)?.n ?? 0
+    const user = await dbGet('SELECT last_seen_at FROM users WHERE username = ?', partner) as any
+    conversations.push({
       partner,
       color: usernameColor(partner),
       last_text: last?.text ?? '',
@@ -744,41 +727,43 @@ app.get('/api/dms', (req: Request, res: Response) => {
       unread_count: unread,
       online: isOnline(partner),
       last_seen_at: user?.last_seen_at ?? null,
-    }
-  }).sort((a: any, b: any) => b.last_timestamp - a.last_timestamp)
+    })
+  }
+  conversations.sort((a: any, b: any) => b.last_timestamp - a.last_timestamp)
   res.json({ conversations })
 })
 
-app.get('/api/dms/:username', (req: Request, res: Response) => {
+app.get('/api/dms/:username', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = String(req.params.username)
-  const target = db.prepare('SELECT username, last_seen_at FROM users WHERE username = ?').get(partner) as any
+  const target = await dbGet('SELECT username, last_seen_at FROM users WHERE username = ?', partner) as any
   if (!target) return res.status(404).json({ error: 'User not found' })
-  const msgs = db.prepare(`
+  const msgs = await dbAll(`
     SELECT * FROM dm_messages
     WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)
     ORDER BY timestamp ASC
-  `).all(auth.username, partner, partner, auth.username)
+  `, auth.username, partner, partner, auth.username)
   // Mark partner's unread messages to me as read
   const unreadIds = msgs.filter((m: any) => m.from_user === partner && m.status !== 'read').map((m: any) => m.id)
   if (unreadIds.length > 0) {
-    db.prepare(`UPDATE dm_messages SET status = 'read' WHERE id IN (${unreadIds.map(() => '?').join(',')})`).run(...unreadIds)
+    await dbRun(`UPDATE dm_messages SET status = 'read' WHERE id IN (${unreadIds.map(() => '?').join(',')})`, ...unreadIds)
     sendToUser(partner, { type: 'dm_read', byUser: auth.username })
   }
+  const messagesWithReactions = await Promise.all(msgs.map(async (m: any) => ({ ...m, color: usernameColor(m.from_user), reactions: await getReactions(m.id, 'dm') })))
   res.json({
-    messages: msgs.map((m: any) => ({ ...m, color: usernameColor(m.from_user), reactions: getReactions(m.id, 'dm') })),
+    messages: messagesWithReactions,
     partner_online: isOnline(partner),
     partner_last_seen: target.last_seen_at,
   })
 })
 
-app.post('/api/dms/:username', (req: Request, res: Response) => {
+app.post('/api/dms/:username', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = String(req.params.username)
   if (partner === auth.username) return res.status(400).json({ error: "Can't DM yourself" })
-  const target = db.prepare('SELECT username FROM users WHERE username = ? AND email_verified = 1').get(partner) as any
+  const target = await dbGet('SELECT username FROM users WHERE username = ? AND email_verified = 1', partner) as any
   if (!target) return res.status(404).json({ error: 'User not found' })
   const text = String(req.body.text || '').trim().slice(0, 2000)
   const fileUrl = req.body.file_url ? String(req.body.file_url) : null
@@ -792,10 +777,10 @@ app.post('/api/dms/:username', (req: Request, res: Response) => {
   const ts = Date.now()
   const online = isOnline(partner)
   const status = online ? 'delivered' : 'sent'
-  const result = db.prepare(`
+  const result = await dbRun(`
     INSERT INTO dm_messages (from_user, to_user, text, timestamp, status, reply_to_id, reply_to_text, reply_to_username, file_url, file_name, file_type, file_size)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(auth.username, partner, text, ts, status, replyToId, replyToText, replyToUsername, fileUrl, fileName, fileType, fileSize)
+  `, auth.username, partner, text, ts, status, replyToId, replyToText, replyToUsername, fileUrl, fileName, fileType, fileSize)
   const data = {
     id: result.lastInsertRowid,
     from_user: auth.username,
@@ -819,54 +804,54 @@ app.post('/api/dms/:username', (req: Request, res: Response) => {
 
 // ── User Profile & Avatar ─────────────────────────────────────────────────────
 
-app.get('/api/users/:username', (req: Request, res: Response) => {
+app.get('/api/users/:username', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const user = db.prepare('SELECT username, avatar_url, last_seen_at, created_at FROM users WHERE username = ?').get(req.params.username) as any
+  const user = await dbGet('SELECT username, avatar_url, last_seen_at, created_at FROM users WHERE username = ?', req.params.username) as any
   if (!user) return res.status(404).json({ error: 'User not found' })
   res.json({ user: { ...user, online: isOnline(user.username) } })
 })
 
-app.post('/api/avatar', upload.single('avatar'), (req: Request, res: Response) => {
+app.post('/api/avatar', upload.single('avatar'), async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   if (!req.file) return res.status(400).json({ error: 'No file' })
   const url = `/uploads/${req.file.filename}`
-  db.prepare('UPDATE users SET avatar_url = ? WHERE username = ?').run(url, auth.username)
+  await dbRun('UPDATE users SET avatar_url = ? WHERE username = ?', url, auth.username)
   res.json({ avatar_url: url })
 })
 
 // ── Message Search ────────────────────────────────────────────────────────────
 
-app.get('/api/search/messages', (req: Request, res: Response) => {
+app.get('/api/search/messages', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const q = String(req.query.q || '').trim()
   if (!q || q.length < 2) return res.json({ results: [] })
   const like = `%${q}%`
   // Search DMs
-  const dmResults = db.prepare(`
+  const dmResults = (await dbAll(`
     SELECT id, from_user, to_user, text, timestamp, 'dm' as source_type
     FROM dm_messages
     WHERE deleted = 0 AND text LIKE ? AND (from_user = ? OR to_user = ?)
     ORDER BY timestamp DESC LIMIT 20
-  `).all(like, auth.username, auth.username).map((r: any) => ({
+  `, like, auth.username, auth.username)).map((r: any) => ({
     ...r,
     partner: r.from_user === auth.username ? r.to_user : r.from_user,
     color: usernameColor(r.from_user),
   }))
   // Search group messages
-  const myGroups = (db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username) as any[]).map((r: any) => r.group_id)
+  const myGroups = (await dbAll('SELECT group_id FROM group_members WHERE username = ?', auth.username) as any[]).map((r: any) => r.group_id)
   let groupResults: any[] = []
   if (myGroups.length > 0) {
-    groupResults = db.prepare(`
+    groupResults = (await dbAll(`
       SELECT gm.id, gm.username as from_user, gm.text, gm.timestamp, gm.group_id,
              cg.name as group_name, 'group' as source_type
       FROM group_messages gm
       JOIN chat_groups cg ON cg.id = gm.group_id
       WHERE gm.deleted = 0 AND gm.text LIKE ? AND gm.group_id IN (${myGroups.map(() => '?').join(',')})
       ORDER BY gm.timestamp DESC LIMIT 20
-    `).all(like, ...myGroups).map((r: any) => ({
+    `, like, ...myGroups)).map((r: any) => ({
       ...r,
       color: usernameColor(r.from_user),
     }))
@@ -875,122 +860,122 @@ app.get('/api/search/messages', (req: Request, res: Response) => {
 })
 // ── Conversation Clear ──────────────────────────────────────────────────────
 
-app.delete('/api/dm/:partner', (req: Request, res: Response) => {
+app.delete('/api/dm/:partner', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = String(req.params.partner)
   // Soft-delete all messages in the conversation
-  db.prepare(`UPDATE dm_messages SET deleted = 1 WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)`).run(auth.username, partner, partner, auth.username)
+  await dbRun(`UPDATE dm_messages SET deleted = 1 WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)`, auth.username, partner, partner, auth.username)
   res.json({ message: 'Conversation cleared' })
 })
 
 // ── Media Gallery ───────────────────────────────────────────────────────────
 
-app.get('/api/media/dm/:partner', (req: Request, res: Response) => {
+app.get('/api/media/dm/:partner', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = String(req.params.partner)
-  const files = db.prepare(`
+  const files = await dbAll(`
     SELECT id, from_user, file_url, file_name, file_type, file_size, timestamp
     FROM dm_messages
     WHERE deleted = 0 AND file_url IS NOT NULL
       AND ((from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?))
     ORDER BY timestamp DESC LIMIT 50
-  `).all(auth.username, partner, partner, auth.username)
+  `, auth.username, partner, partner, auth.username)
   res.json({ files })
 })
 
-app.get('/api/media/group/:id', (req: Request, res: Response) => {
+app.get('/api/media/group/:id', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
+  if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
-  const files = db.prepare(`
+  const files = await dbAll(`
     SELECT id, username as from_user, file_url, file_name, file_type, file_size, timestamp
     FROM group_messages
     WHERE deleted = 0 AND file_url IS NOT NULL AND group_id = ?
     ORDER BY timestamp DESC LIMIT 50
-  `).all(groupId)
+  `, groupId)
   res.json({ files })
 })
 
 // ── Pinned Messages API ─────────────────────────────────────────────────────
 
-app.post('/api/groups/:id/pins/:msgId', (req: Request, res: Response) => {
+app.post('/api/groups/:id/pins/:msgId', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const msgId = Number(req.params.msgId)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
+  if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
-  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId) as any
+  const msg = await dbGet('SELECT * FROM group_messages WHERE id = ? AND group_id = ?', msgId, groupId) as any
   if (!msg || msg.deleted) return res.status(404).json({ error: 'Message not found' })
-  db.prepare('INSERT OR IGNORE INTO pinned_messages (group_id, message_id, pinned_by, pinned_at) VALUES (?, ?, ?, ?)').run(groupId, msgId, auth.username, Date.now())
-  broadcastToGroup(groupId, { type: 'pins_updated', groupId })
+  await dbRun('INSERT INTO pinned_messages (group_id, message_id, pinned_by, pinned_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING', groupId, msgId, auth.username, Date.now())
+  await broadcastToGroup(groupId, { type: 'pins_updated', groupId })
   res.json({ message: 'Pinned' })
 })
 
-app.delete('/api/groups/:id/pins/:msgId', (req: Request, res: Response) => {
+app.delete('/api/groups/:id/pins/:msgId', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const msgId = Number(req.params.msgId)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
+  if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
-  db.prepare('DELETE FROM pinned_messages WHERE group_id = ? AND message_id = ?').run(groupId, msgId)
-  broadcastToGroup(groupId, { type: 'pins_updated', groupId })
+  await dbRun('DELETE FROM pinned_messages WHERE group_id = ? AND message_id = ?', groupId, msgId)
+  await broadcastToGroup(groupId, { type: 'pins_updated', groupId })
   res.json({ message: 'Unpinned' })
 })
 
-app.get('/api/groups/:id/pins', (req: Request, res: Response) => {
+app.get('/api/groups/:id/pins', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
+  if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
-  const pins = db.prepare(`
+  const pins = (await dbAll(`
     SELECT pm.*, gm.text, gm.username, gm.timestamp as msg_timestamp, gm.file_url, gm.file_name
     FROM pinned_messages pm
     JOIN group_messages gm ON gm.id = pm.message_id
     WHERE pm.group_id = ? AND gm.deleted = 0
     ORDER BY pm.pinned_at DESC
-  `).all(groupId).map((p: any) => ({ ...p, color: usernameColor(p.username) }))
+  `, groupId)).map((p: any) => ({ ...p, color: usernameColor(p.username) }))
   res.json({ pins })
 })
 
 // ── Contact Blocking API ────────────────────────────────────────────────────
 
-app.post('/api/block/:username', (req: Request, res: Response) => {
+app.post('/api/block/:username', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const blocked = req.params.username
   if (blocked === auth.username) return res.status(400).json({ error: 'Cannot block yourself' })
-  db.prepare('INSERT OR IGNORE INTO blocked_users (blocker, blocked, created_at) VALUES (?, ?, ?)').run(auth.username, blocked, Date.now())
+  await dbRun('INSERT INTO blocked_users (blocker, blocked, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', auth.username, blocked, Date.now())
   res.json({ message: 'Blocked' })
 })
 
-app.delete('/api/block/:username', (req: Request, res: Response) => {
+app.delete('/api/block/:username', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  db.prepare('DELETE FROM blocked_users WHERE blocker = ? AND blocked = ?').run(auth.username, req.params.username)
+  await dbRun('DELETE FROM blocked_users WHERE blocker = ? AND blocked = ?', auth.username, req.params.username)
   res.json({ message: 'Unblocked' })
 })
 
-app.get('/api/blocked', (req: Request, res: Response) => {
+app.get('/api/blocked', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const blocked = db.prepare('SELECT blocked, created_at FROM blocked_users WHERE blocker = ?').all(auth.username) as any[]
+  const blocked = await dbAll('SELECT blocked, created_at FROM blocked_users WHERE blocker = ?', auth.username) as any[]
   res.json({ blocked })
 })
 
 // ── Message Forwarding API ──────────────────────────────────────────────────
 
-app.post('/api/forward', (req: Request, res: Response) => {
+app.post('/api/forward', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const { messageId, messageType, toPartner, toGroupId } = req.body
@@ -1001,13 +986,13 @@ app.post('/api/forward', (req: Request, res: Response) => {
   let originalFile = null
   let originalFrom = ''
   if (messageType === 'dm') {
-    const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(messageId) as any
+    const msg = await dbGet('SELECT * FROM dm_messages WHERE id = ?', messageId) as any
     if (!msg || msg.deleted) return res.status(404).json({ error: 'Message not found' })
     originalText = msg.text
     originalFrom = msg.from_user
     if (msg.file_url) originalFile = { url: msg.file_url, name: msg.file_name, type: msg.file_type, size: msg.file_size }
   } else if (messageType === 'group') {
-    const msg = db.prepare('SELECT * FROM group_messages WHERE id = ?').get(messageId) as any
+    const msg = await dbGet('SELECT * FROM group_messages WHERE id = ?', messageId) as any
     if (!msg || msg.deleted) return res.status(404).json({ error: 'Message not found' })
     originalText = msg.text
     originalFrom = msg.username
@@ -1019,11 +1004,11 @@ app.post('/api/forward', (req: Request, res: Response) => {
   // Forward to DM
   if (toPartner) {
     const ts = Date.now()
-    const row = db.prepare(`INSERT INTO dm_messages (from_user, to_user, text, timestamp, file_url, file_name, file_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    const row = await dbRun(`INSERT INTO dm_messages (from_user, to_user, text, timestamp, file_url, file_name, file_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       auth.username, toPartner, fwdText, ts,
       originalFile?.url ?? null, originalFile?.name ?? null, originalFile?.type ?? null, originalFile?.size ?? null
     )
-    const newMsg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(row.lastInsertRowid) as any
+    const newMsg = await dbGet('SELECT * FROM dm_messages WHERE id = ?', row.lastInsertRowid) as any
     const payload = { type: 'dm_message', message: { ...newMsg, color: usernameColor(newMsg.from_user) } }
     sendToUser(auth.username, payload)
     sendToUser(toPartner, payload)
@@ -1032,16 +1017,16 @@ app.post('/api/forward', (req: Request, res: Response) => {
   // Forward to group
   if (toGroupId) {
     const gid = Number(toGroupId)
-    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(gid, auth.username) as any) {
+    if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', gid, auth.username) as any) {
       return res.status(403).json({ error: 'Not a member of target group' })
     }
     const ts = Date.now()
-    db.prepare(`INSERT INTO group_messages (group_id, username, text, timestamp, file_url, file_name, file_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    await dbRun(`INSERT INTO group_messages (group_id, username, text, timestamp, file_url, file_name, file_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       gid, auth.username, fwdText, ts,
       originalFile?.url ?? null, originalFile?.name ?? null, originalFile?.type ?? null, originalFile?.size ?? null
     )
-    const newMsg = db.prepare('SELECT * FROM group_messages WHERE id = last_insert_rowid()').get() as any
-    broadcastToGroup(gid, {
+    const newMsg = await dbGet('SELECT * FROM group_messages ORDER BY id DESC LIMIT 1',) as any
+    await broadcastToGroup(gid, {
       type: 'group_message', groupId: gid,
       message: { ...newMsg, color: usernameColor(newMsg.username) }
     })
@@ -1053,22 +1038,23 @@ app.post('/api/forward', (req: Request, res: Response) => {
 // ── Message Edit / Delete / Reactions API ─────────────────────────────────────
 
 // Helper: get reactions for a message
-function getReactions(messageId: number, messageType: string): AggregatedReaction[] {
-  return db.prepare('SELECT emoji, GROUP_CONCAT(username) as users FROM message_reactions WHERE message_id = ? AND message_type = ? GROUP BY emoji').all(messageId, messageType).map((r: any) => ({ emoji: r.emoji, users: r.users.split(',') }))
+async function getReactions(messageId: number, messageType: string): Promise<AggregatedReaction[]> {
+  const sql = "SELECT emoji, STRING_AGG(username, ',') as users FROM message_reactions WHERE message_id = ? AND message_type = ? GROUP BY emoji"
+  return (await dbAll(sql, messageId, messageType)).map((r: any) => ({ emoji: r.emoji, users: r.users ? r.users.split(',') : [] }))
 }
 
 // Edit DM message
-app.put('/api/dms/:partner/messages/:id', (req: Request, res: Response) => {
+app.put('/api/dms/:partner/messages/:id', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const msgId = Number(req.params.id)
   const text = String(req.body.text || '').trim().slice(0, 2000)
   if (!text) return res.status(400).json({ error: 'Text is required' })
-  const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(msgId) as any
+  const msg = await dbGet('SELECT * FROM dm_messages WHERE id = ?', msgId) as any
   if (!msg) return res.status(404).json({ error: 'Message not found' })
   if (msg.from_user !== auth.username) return res.status(403).json({ error: 'Can only edit your own messages' })
   if (msg.deleted) return res.status(400).json({ error: 'Message is deleted' })
-  db.prepare('UPDATE dm_messages SET text = ?, edited = 1 WHERE id = ?').run(text, msgId)
+  await dbRun('UPDATE dm_messages SET text = ?, edited = 1 WHERE id = ?', text, msgId)
   const partner = msg.from_user === auth.username ? msg.to_user : msg.from_user
   const update = { type: 'dm_edited', messageId: msgId, text, partner }
   sendToUser(auth.username, update)
@@ -1077,14 +1063,14 @@ app.put('/api/dms/:partner/messages/:id', (req: Request, res: Response) => {
 })
 
 // Delete DM message
-app.delete('/api/dms/:partner/messages/:id', (req: Request, res: Response) => {
+app.delete('/api/dms/:partner/messages/:id', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const msgId = Number(req.params.id)
-  const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(msgId) as any
+  const msg = await dbGet('SELECT * FROM dm_messages WHERE id = ?', msgId) as any
   if (!msg) return res.status(404).json({ error: 'Message not found' })
   if (msg.from_user !== auth.username) return res.status(403).json({ error: 'Can only delete your own messages' })
-  db.prepare('UPDATE dm_messages SET deleted = 1, text = \'\' WHERE id = ?').run(msgId)
+  await dbRun("UPDATE dm_messages SET deleted = 1, text = '' WHERE id = ?", msgId)
   const partner = msg.from_user === auth.username ? msg.to_user : msg.from_user
   const update = { type: 'dm_deleted', messageId: msgId, partner }
   sendToUser(auth.username, update)
@@ -1093,81 +1079,81 @@ app.delete('/api/dms/:partner/messages/:id', (req: Request, res: Response) => {
 })
 
 // Edit group message
-app.put('/api/groups/:id/messages/:msgId', (req: Request, res: Response) => {
+app.put('/api/groups/:id/messages/:msgId', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const msgId = Number(req.params.msgId)
   const text = String(req.body.text || '').trim().slice(0, 2000)
   if (!text) return res.status(400).json({ error: 'Text is required' })
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
+  if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
-  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId) as any
+  const msg = await dbGet('SELECT * FROM group_messages WHERE id = ? AND group_id = ?', msgId, groupId) as any
   if (!msg) return res.status(404).json({ error: 'Message not found' })
   if (msg.username !== auth.username) return res.status(403).json({ error: 'Can only edit your own messages' })
   if (msg.deleted) return res.status(400).json({ error: 'Message is deleted' })
-  db.prepare('UPDATE group_messages SET text = ?, edited = 1 WHERE id = ?').run(text, msgId)
-  broadcastToGroup(groupId, { type: 'group_msg_edited', groupId, messageId: msgId, text })
+  await dbRun('UPDATE group_messages SET text = ?, edited = 1 WHERE id = ?', text, msgId)
+  await broadcastToGroup(groupId, { type: 'group_msg_edited', groupId, messageId: msgId, text })
   res.json({ message: 'Updated' })
 })
 
 // Delete group message
-app.delete('/api/groups/:id/messages/:msgId', (req: Request, res: Response) => {
+app.delete('/api/groups/:id/messages/:msgId', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const msgId = Number(req.params.msgId)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
+  if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
-  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId) as any
+  const msg = await dbGet('SELECT * FROM group_messages WHERE id = ? AND group_id = ?', msgId, groupId) as any
   if (!msg) return res.status(404).json({ error: 'Message not found' })
   // Allow message author or group admins to delete
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
+  const membership = await dbGet('SELECT role FROM group_members WHERE group_id = ? AND username = ?', groupId, auth.username) as any
   if (msg.username !== auth.username && membership?.role !== 'admin') {
     return res.status(403).json({ error: 'Only the author or admins can delete messages' })
   }
-  db.prepare('UPDATE group_messages SET deleted = 1, text = \'\' WHERE id = ?').run(msgId)
-  broadcastToGroup(groupId, { type: 'group_msg_deleted', groupId, messageId: msgId })
+  await dbRun("UPDATE group_messages SET deleted = 1, text = '' WHERE id = ?", msgId)
+  await broadcastToGroup(groupId, { type: 'group_msg_deleted', groupId, messageId: msgId })
   res.json({ message: 'Deleted' })
 })
 
 // Add/toggle reaction
-app.post('/api/reactions', (req: Request, res: Response) => {
+app.post('/api/reactions', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const { messageId, messageType, emoji } = req.body
   if (!messageId || !messageType || !emoji) return res.status(400).json({ error: 'Missing fields' })
   if (!['dm', 'group', 'channel'].includes(messageType)) return res.status(400).json({ error: 'Invalid message type' })
   // Toggle: remove if already exists, add if not
-  const existing = db.prepare('SELECT id FROM message_reactions WHERE message_id = ? AND message_type = ? AND username = ? AND emoji = ?').get(messageId, messageType, auth.username, emoji) as any
+  const existing = await dbGet('SELECT id FROM message_reactions WHERE message_id = ? AND message_type = ? AND username = ? AND emoji = ?', messageId, messageType, auth.username, emoji) as any
   if (existing) {
-    db.prepare('DELETE FROM message_reactions WHERE id = ?').run(existing.id)
+    await dbRun('DELETE FROM message_reactions WHERE id = ?', existing.id)
   } else {
-    db.prepare('INSERT OR IGNORE INTO message_reactions (message_id, message_type, username, emoji, created_at) VALUES (?, ?, ?, ?, ?)').run(messageId, messageType, auth.username, emoji, Date.now())
+    await dbRun('INSERT INTO message_reactions (message_id, message_type, username, emoji, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING', messageId, messageType, auth.username, emoji, Date.now())
   }
-  const reactions = getReactions(messageId, messageType)
+  const reactions = await getReactions(messageId, messageType)
   // Broadcast reaction update
   if (messageType === 'dm') {
-    const msg = db.prepare('SELECT from_user, to_user FROM dm_messages WHERE id = ?').get(messageId) as any
+    const msg = await dbGet('SELECT from_user, to_user FROM dm_messages WHERE id = ?', messageId) as any
     if (msg) {
       const update = { type: 'reaction_update', messageId, messageType, reactions }
       sendToUser(msg.from_user, update)
       sendToUser(msg.to_user, update)
     }
   } else if (messageType === 'group') {
-    const msg = db.prepare('SELECT group_id FROM group_messages WHERE id = ?').get(messageId) as any
+    const msg = await dbGet('SELECT group_id FROM group_messages WHERE id = ?', messageId) as any
     if (msg) broadcastToGroup(msg.group_id, { type: 'reaction_update', messageId, messageType, reactions })
   }
   res.json({ reactions })
 })
 
 // Get reactions for a message
-app.get('/api/reactions/:messageType/:messageId', (req: Request, res: Response) => {
+app.get('/api/reactions/:messageType/:messageId', async (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const reactions = getReactions(Number(req.params.messageId), String(req.params.messageType))
+  const reactions = await getReactions(Number(req.params.messageId), String(req.params.messageType))
   res.json({ reactions })
 })
 
@@ -1194,9 +1180,9 @@ function sendToUser(username: string, data: Record<string, unknown>): void {
   }
 }
 
-function broadcastToGroup(groupId: number, data: Record<string, unknown>): void {
+async function broadcastToGroup(groupId: number, data: Record<string, unknown>): Promise<void> {
   const members = new Set(
-    (db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]).map((m: any) => m.username)
+    (await dbAll('SELECT username FROM group_members WHERE group_id = ?', groupId) as any[]).map((m: any) => m.username)
   )
   const json = JSON.stringify(data)
   for (const [ws, client] of clients) {
@@ -1212,16 +1198,16 @@ wss.on('connection', (ws: WebSocket) => {
   ws.on('message', (raw: Buffer) => {
     let msg: WsIncomingMessage
     try { msg = JSON.parse(raw.toString()) } catch { return }
-    try { handleWsMessage(ws, msg) } catch (err) { console.error('WS handler error:', err) }
+    handleWsMessage(ws, msg).catch((err: any) => console.error('WS handler error:', err))
   })
 
-  ws.on('close', () => {
+  ws.on('close', async () => {
     try {
       const client = clients.get(ws)
       if (client) {
         clients.delete(ws)
         const now = Date.now()
-        db.prepare('UPDATE users SET last_seen_at = ? WHERE username = ?').run(now, client.username)
+        await dbRun('UPDATE users SET last_seen_at = ? WHERE username = ?', now, client.username)
         const leaveEvent = { type: 'system', message: `${client.username} left`, timestamp: now }
         messages.push(leaveEvent)
         broadcastAll({ type: 'system_message', data: leaveEvent })
@@ -1234,7 +1220,7 @@ wss.on('connection', (ws: WebSocket) => {
   })
 })
 
-function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
+async function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
 
   if (msg.type === 'join') {
     let payload
@@ -1260,15 +1246,17 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
     broadcastAll({ type: 'users', users: getOnlineUsers() })
 
     // Promote any pending DMs to 'delivered' now that the user is online
-    const senders = db.prepare(
-      "SELECT DISTINCT from_user FROM dm_messages WHERE to_user = ? AND status = 'sent'"
-    ).all(username)
+    const senders = await dbAll(
+      "SELECT DISTINCT from_user FROM dm_messages WHERE to_user = ? AND status = 'sent'",
+      username
+    )
     for (const { from_user } of senders as { from_user: string }[]) {
-      const ids = db.prepare(
-        "SELECT id FROM dm_messages WHERE from_user = ? AND to_user = ? AND status = 'sent'"
-      ).all(from_user, username).map((r: any) => r.id)
+      const ids = (await dbAll(
+        "SELECT id FROM dm_messages WHERE from_user = ? AND to_user = ? AND status = 'sent'",
+        from_user, username
+      )).map((r: any) => r.id)
       if (ids.length) {
-        db.prepare(`UPDATE dm_messages SET status = 'delivered' WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids)
+        await dbRun(`UPDATE dm_messages SET status = 'delivered' WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)
         sendToUser(from_user, { type: 'dm_delivered', byUser: username, ids })
       }
     }
@@ -1317,16 +1305,17 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
     const fileType = fileUrl ? String(msg.file_type || 'application/octet-stream') : null
     const fileSize = fileUrl ? (Number(msg.file_size) || 0) : null
     if (!groupId || (!text && !fileUrl)) return
-    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, client.username) as any) return
+    if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, client.username) as any) return
     const replyToId = msg.reply_to_id ? Number(msg.reply_to_id) : null
     const replyToText = replyToId ? String(msg.reply_to_text || '').slice(0, 200) : null
     const replyToUsername = replyToId ? String(msg.reply_to_username || '') : null
     const ts = Date.now()
-    const result = db.prepare(
-      'INSERT INTO group_messages (group_id, username, text, timestamp, reply_to_id, reply_to_text, reply_to_username, file_url, file_name, file_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(groupId, client.username, text, ts, replyToId, replyToText, replyToUsername, fileUrl, fileName, fileType, fileSize)
-    db.prepare('UPDATE group_members SET last_seen_at = ? WHERE group_id = ? AND username = ?').run(ts, groupId, client.username)
-    broadcastToGroup(groupId, {
+    const result = await dbRun(
+      'INSERT INTO group_messages (group_id, username, text, timestamp, reply_to_id, reply_to_text, reply_to_username, file_url, file_name, file_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      groupId, client.username, text, ts, replyToId, replyToText, replyToUsername, fileUrl, fileName, fileType, fileSize
+    )
+    await dbRun('UPDATE group_members SET last_seen_at = ? WHERE group_id = ? AND username = ?', ts, groupId, client.username)
+    await broadcastToGroup(groupId, {
       type: 'group_message',
       groupId,
       data: {
@@ -1355,8 +1344,8 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
     if (!client) return
     const groupId = Number(msg.groupId)
     if (!groupId) return
-    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, client.username) as any) return
-    const members = new Set((db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]).map((m: any) => m.username))
+    if (!await dbGet('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?', groupId, client.username) as any) return
+    const members = new Set((await dbAll('SELECT username FROM group_members WHERE group_id = ?', groupId) as any[]).map((m: any) => m.username))
     const json = JSON.stringify({ type: 'group_typing', groupId, username: client.username, isTyping: msg.isTyping !== false })
     for (const [cws, cclient] of clients) {
       if (cclient.username !== client.username && members.has(cclient.username) && cws.readyState === 1) cws.send(json)
@@ -1370,6 +1359,12 @@ if (existsSync(distDir)) {
 }
 
 const PORT = process.env.PORT || 3001
-server.listen(Number(PORT), '0.0.0.0', () => {
-  console.log(`Server running on http://localhost:${PORT}`)
+
+initDb().then(() => {
+  server.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`Server running on http://localhost:${PORT}`)
+  })
+}).catch(err => {
+  console.error('Failed to initialize database:', err)
+  process.exit(1)
 })
