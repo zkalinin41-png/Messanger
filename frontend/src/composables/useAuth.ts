@@ -11,7 +11,7 @@ interface LoginError extends Error {
 export function useAuth() {
     const isAuthenticated: ComputedRef<boolean> = computed(() => !!token.value)
 
-    async function register(usernameVal: string, emailVal: string, password: string): Promise<{ message: string; email: string }> {
+    async function register(usernameVal: string, emailVal: string, password: string): Promise<{ message: string; email: string; token?: string; username?: string }> {
         const res = await fetch('/api/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

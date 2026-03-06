@@ -92,9 +92,16 @@ async function handleRegister() {
   loading.value = true
   try {
     const res = await register(username.value.trim(), email.value.trim(), password.value)
-    pendingEmail.value = res.email
-    clearForm()
-    mode.value = 'pending-verification'
+    if (res.token) {
+      // Auto-login: save session and emit authenticated
+      localStorage.setItem('auth_token', res.token)
+      localStorage.setItem('auth_username', res.username!)
+      window.location.reload()
+    } else {
+      pendingEmail.value = res.email
+      clearForm()
+      mode.value = 'pending-verification'
+    }
   } catch (err) {
     error.value = err.message
   } finally {

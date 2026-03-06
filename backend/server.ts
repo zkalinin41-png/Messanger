@@ -335,7 +335,8 @@ app.post('/api/register', async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Server error' })
   }
 
-  res.json({ message: 'Account created! You can now sign in.', email: mail })
+  const jwtToken = jwt.sign({ username: name }, JWT_SECRET, { expiresIn: '7d' })
+  res.json({ message: 'Account created!', email: mail, token: jwtToken, username: name })
 })
 
 // Verify email (link from email)
