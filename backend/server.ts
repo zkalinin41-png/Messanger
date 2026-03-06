@@ -663,7 +663,7 @@ app.delete('/api/groups/:id/members/:username', (req: Request, res: Response) =>
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const targetName = req.params.username
+  const targetName = String(req.params.username)
   const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
   if (membership.role !== 'admin') return res.status(403).json({ error: 'Admins only' })
@@ -694,7 +694,7 @@ app.put('/api/groups/:id/members/:username/role', (req: Request, res: Response) 
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const targetName = req.params.username
+  const targetName = String(req.params.username)
   const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId) as any
   if (!group) return res.status(404).json({ error: 'Group not found' })
   if (group.creator !== auth.username) return res.status(403).json({ error: 'Only the creator can change roles' })
@@ -740,10 +740,10 @@ app.get('/api/dms', (req: Request, res: Response) => {
       SELECT text, timestamp FROM dm_messages
       WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)
       ORDER BY timestamp DESC LIMIT 1
-    `).get(auth.username, partner, partner, auth.username)
-    const unread = db.prepare(
+    `).get(auth.username, partner, partner, auth.username) as any
+    const unread = (db.prepare(
       "SELECT COUNT(*) as n FROM dm_messages WHERE from_user = ? AND to_user = ? AND status != 'read'"
-    ).get(partner, auth.username).n
+    ).get(partner, auth.username) as any)?.n ?? 0
     const user = db.prepare('SELECT last_seen_at FROM users WHERE username = ?').get(partner) as any
     return {
       partner,
@@ -761,7 +761,7 @@ app.get('/api/dms', (req: Request, res: Response) => {
 app.get('/api/dms/:username', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const partner = req.params.username
+  const partner = String(req.params.username)
   const target = db.prepare('SELECT username, last_seen_at FROM users WHERE username = ?').get(partner) as any
   if (!target) return res.status(404).json({ error: 'User not found' })
   const msgs = db.prepare(`
@@ -785,7 +785,7 @@ app.get('/api/dms/:username', (req: Request, res: Response) => {
 app.post('/api/dms/:username', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const partner = req.params.username
+  const partner = String(req.params.username)
   if (partner === auth.username) return res.status(400).json({ error: "Can't DM yourself" })
   const target = db.prepare('SELECT username FROM users WHERE username = ? AND email_verified = 1').get(partner) as any
   if (!target) return res.status(404).json({ error: 'User not found' })
@@ -865,7 +865,7 @@ app.get('/api/search/messages', (req: Request, res: Response) => {
     color: usernameColor(r.from_user),
   }))
   // Search group messages
-  const myGroups = db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username) as any[]).map((r: any) => r.group_id)
+    const myGroups = (db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username) as any[]).map((r: any) => r.group_id)
 let groupResults: any[] = []
 if (myGroups.length > 0) {
   groupResults = db.prepare(`
@@ -887,7 +887,7 @@ res.json({ results: [...dmResults, ...groupResults].sort((a, b) => b.timestamp -
 app.delete('/api/dm/:partner', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const partner = req.params.partner
+  const partner = String(req.params.partner)
   // Soft-delete all messages in the conversation
   db.prepare(`UPDATE dm_messages SET deleted = 1 WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)`).run(auth.username, partner, partner, auth.username)
   res.json({ message: 'Conversation cleared' })
@@ -898,7 +898,7 @@ app.delete('/api/dm/:partner', (req: Request, res: Response) => {
 app.get('/api/media/dm/:partner', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const partner = req.params.partner
+  const partner = String(req.params.partner)
   const files = db.prepare(`
     SELECT id, from_user, file_url, file_name, file_type, file_size, timestamp
     FROM dm_messages
@@ -1049,7 +1049,7 @@ app.post('/api/forward', (req: Request, res: Response) => {
       gid, auth.username, fwdText, ts,
       originalFile?.url ?? null, originalFile?.name ?? null, originalFile?.type ?? null, originalFile?.size ?? null
     )
-    const newMsg = db.prepare('SELECT * FROM group_messages WHERE id = last_insert_rowid()').get()
+    const newMsg = db.prepare('SELECT * FROM group_messages WHERE id = last_insert_rowid()').get() as any
     broadcastToGroup(gid, {
       type: 'group_message', groupId: gid,
       message: { ...newMsg, color: usernameColor(newMsg.username) }
@@ -1176,7 +1176,7 @@ app.post('/api/reactions', (req: Request, res: Response) => {
 app.get('/api/reactions/:messageType/:messageId', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const reactions = getReactions(Number(req.params.messageId), req.params.messageType)
+  const reactions = getReactions(Number(req.params.messageId), String(req.params.messageType))
   res.json({ reactions })
 })
 
@@ -1205,7 +1205,7 @@ function sendToUser(username: string, data: Record<string, unknown>): void {
 
 function broadcastToGroup(groupId: number, data: Record<string, unknown>): void {
   const members = new Set(
-    db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]).map((m: any) => m.username)
+    (db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]).map((m: any) => m.username)
   )
   const json = JSON.stringify(data)
   for (const [ws, client] of clients) {
@@ -1365,7 +1365,7 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
     const groupId = Number(msg.groupId)
     if (!groupId) return
     if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, client.username) as any) return
-    const members = new Set(db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]).map((m: any) => m.username))
+    const members = new Set((db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]).map((m: any) => m.username))
     const json = JSON.stringify({ type: 'group_typing', groupId, username: client.username, isTyping: msg.isTyping !== false })
     for (const [cws, cclient] of clients) {
       if (cclient.username !== client.username && members.has(cclient.username) && cws.readyState === 1) cws.send(json)
