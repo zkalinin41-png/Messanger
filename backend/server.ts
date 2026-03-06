@@ -188,15 +188,22 @@ const gmailTransporter = nodemailer.createTransport({
     user: GMAIL_USER,
     pass: process.env.GMAIL_APP_PASSWORD || '',
   },
+  connectionTimeout: 5000,
+  greetingTimeout: 5000,
+  socketTimeout: 10000,
 })
 
 async function sendMail(to: string, subject: string, html: string): Promise<void> {
-  await gmailTransporter.sendMail({
-    from: `"Chat App" <${GMAIL_USER}>`,
-    to,
-    subject,
-    html,
-  })
+  const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Email send timed out')), 15000))
+  await Promise.race([
+    gmailTransporter.sendMail({
+      from: `"Chat App" <${GMAIL_USER}>`,
+      to,
+      subject,
+      html,
+    }),
+    timeout,
+  ])
   console.log(`📨 Email sent to ${to}`)
 }
 
