@@ -203,7 +203,7 @@ db.exec(`
 `)
 
 // --- Email (Gmail SMTP) ---
-const GMAIL_USER = process.env.GMAIL_USER || 'zkalinin41@gmail.com'
+const GMAIL_USER = process.env.GMAIL_USER || 'e.kalinin135@gmail.com'
 const gmailTransporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
