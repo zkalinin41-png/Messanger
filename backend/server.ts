@@ -322,14 +322,12 @@ app.post('/api/register', async (req: Request, res: Response) => {
   }
 
   const hash = bcrypt.hashSync(pass, 10)
-  const token = randomUUID()
-  const expires = Date.now() + 24 * 60 * 60 * 1000
 
   try {
     await dbRun(`
-      INSERT INTO users (username, email, password_hash, verification_token, verification_expires)
-      VALUES (?, ?, ?, ?, ?)
-    `, name, mail, hash, token, expires)
+      INSERT INTO users (username, email, password_hash, email_verified)
+      VALUES (?, ?, ?, 1)
+    `, name, mail, hash)
   } catch (err: any) {
     if (err.code === '23505') {
       return res.status(409).json({ error: 'Username already taken' })
@@ -337,14 +335,7 @@ app.post('/api/register', async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Server error' })
   }
 
-  const verifyUrl = `${req.protocol}://${req.get('host')}/api/verify-email?token=${token}`
-  try {
-    await sendMail(mail, 'Verify your email address', verificationEmailHtml(name, verifyUrl))
-  } catch (e: any) {
-    console.error('Email send failed:', e.message)
-  }
-
-  res.json({ message: 'Check your email to verify your account', email: mail })
+  res.json({ message: 'Account created! You can now sign in.', email: mail })
 })
 
 // Verify email (link from email)
