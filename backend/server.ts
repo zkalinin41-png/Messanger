@@ -85,7 +85,7 @@ db.exec(`
 `)
 
 // Safe migrations — only add columns that don't exist yet
-const existingCols = new Set(db.prepare('PRAGMA table_info(users)').all().map((c: any) => c.name))
+const existingCols = new Set(db.prepare('PRAGMA table_info(users)').all() as any[]).map((c: any) => c.name))
 if (!existingCols.has('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT')
 if (!existingCols.has('email_verified')) db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0')
 if (!existingCols.has('verification_token')) db.exec('ALTER TABLE users ADD COLUMN verification_token TEXT')
@@ -127,7 +127,7 @@ if (!existingCols.has('last_seen_at')) db.exec('ALTER TABLE users ADD COLUMN las
 if (!existingCols.has('avatar_url')) db.exec('ALTER TABLE users ADD COLUMN avatar_url TEXT')
 
 // group_messages: reply columns + file columns
-const gmCols = new Set(db.prepare('PRAGMA table_info(group_messages)').all().map((c: any) => c.name))
+const gmCols = new Set(db.prepare('PRAGMA table_info(group_messages)').all() as any[]).map((c: any) => c.name))
 if (!gmCols.has('reply_to_id')) db.exec('ALTER TABLE group_messages ADD COLUMN reply_to_id INTEGER')
 if (!gmCols.has('reply_to_text')) db.exec('ALTER TABLE group_messages ADD COLUMN reply_to_text TEXT')
 if (!gmCols.has('reply_to_username')) db.exec('ALTER TABLE group_messages ADD COLUMN reply_to_username TEXT')
@@ -153,7 +153,7 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_dm_pair ON dm_messages (from_user, to_us
 db.exec('CREATE INDEX IF NOT EXISTS idx_dm_to ON dm_messages (to_user, status)')
 
 // dm_messages: file columns + edit/delete
-const dmCols = new Set(db.prepare('PRAGMA table_info(dm_messages)').all().map((c: any) => c.name))
+const dmCols = new Set(db.prepare('PRAGMA table_info(dm_messages)').all() as any[]).map((c: any) => c.name))
 if (!dmCols.has('file_url')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_url TEXT')
 if (!dmCols.has('file_name')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_name TEXT')
 if (!dmCols.has('file_type')) db.exec('ALTER TABLE dm_messages ADD COLUMN file_type TEXT')
@@ -332,16 +332,16 @@ app.post('/api/register', async (req: Request, res: Response) => {
   }
 
   // Clean up legacy accounts (pre-email, unverified, same username)
-  const stale = db.prepare('SELECT id FROM users WHERE username = ? AND email IS NULL AND email_verified = 0').get(name)
+  const stale = db.prepare('SELECT id FROM users WHERE username = ? AND email IS NULL AND email_verified = 0').get(name) as any
   if (stale) db.prepare('DELETE FROM users WHERE id = ?').run(stale.id)
 
   // Check username uniqueness
-  if (db.prepare('SELECT id FROM users WHERE username = ?').get(name)) {
+  if (db.prepare('SELECT id FROM users WHERE username = ?').get(name) as any) {
     return res.status(409).json({ error: 'Username already taken' })
   }
 
   // Check email uniqueness
-  if (db.prepare('SELECT id FROM users WHERE email = ?').get(mail)) {
+  if (db.prepare('SELECT id FROM users WHERE email = ?').get(mail) as any) {
     return res.status(409).json({ error: 'Email already registered' })
   }
 
@@ -361,7 +361,7 @@ app.post('/api/register', async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Server error' })
   }
 
-  const verifyUrl = `${req.protocol}://${req.get('host')}/api/verify-email?token=${token}`
+  const verifyUrl = `${req.protocol}://${req.get('host') as any}/api/verify-email?token=${token}`
   try {
     await sendMail(mail, 'Verify your email address', verificationEmailHtml(name, verifyUrl))
   } catch (e: any) {
@@ -372,12 +372,12 @@ app.post('/api/register', async (req: Request, res: Response) => {
 })
 
 // Verify email (link from email)
-app.get('/api/verify-email', (req: Request, res: Response) => {
+app.get('/api/verify-email', (req: Request, res: Response) as any => {
   const { token } = req.query
   const appUrl = getAppUrl(req)
   if (!token) return res.send(simpleHtmlPage('Error', 'Invalid link', 'This verification link is not valid.', appUrl))
 
-  const user = db.prepare('SELECT * FROM users WHERE verification_token = ?').get(token)
+  const user = db.prepare('SELECT * FROM users WHERE verification_token = ?').get(token) as any
 
   if (!user) {
     return res.send(simpleHtmlPage('Error', 'Link not found', 'This link is invalid or was already used.', appUrl))
@@ -396,7 +396,7 @@ app.post('/api/resend-verification', async (req: Request, res: Response) => {
   const mail = String(req.body.email || '').trim().toLowerCase()
   if (!mail) return res.status(400).json({ error: 'Email is required' })
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(mail)
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(mail) as any
   if (!user) return res.status(404).json({ error: 'No account found with that email' })
   if (user.email_verified) return res.status(400).json({ error: 'Email is already verified' })
 
@@ -404,7 +404,7 @@ app.post('/api/resend-verification', async (req: Request, res: Response) => {
   const expires = Date.now() + 24 * 60 * 60 * 1000
   db.prepare('UPDATE users SET verification_token = ?, verification_expires = ? WHERE id = ?').run(token, expires, user.id)
 
-  const verifyUrl = `${req.protocol}://${req.get('host')}/api/verify-email?token=${token}`
+  const verifyUrl = `${req.protocol}://${req.get('host') as any}/api/verify-email?token=${token}`
   try {
     await sendMail(mail, 'Verify your email address', verificationEmailHtml(user.username, verifyUrl))
   } catch (e: any) {
@@ -422,7 +422,7 @@ app.post('/api/forgot-password', async (req: Request, res: Response) => {
 
   if (!mail) return res.json(generic)
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(mail)
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(mail) as any
   if (!user) return res.json(generic)
 
   const token = randomUUID()
@@ -449,7 +449,7 @@ app.post('/api/reset-password', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Password must be at least 6 characters' })
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE reset_token = ?').get(token)
+  const user = db.prepare('SELECT * FROM users WHERE reset_token = ?').get(token) as any
   if (!user) return res.status(400).json({ error: 'Invalid or expired reset link' })
   if (user.reset_expires < Date.now()) return res.status(400).json({ error: 'Reset link has expired. Please request a new one.' })
 
@@ -466,7 +466,7 @@ app.post('/api/change-password', (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Unauthorized' })
   }
   let payload
-  try { payload = jwt.verify(authHeader.slice(7), JWT_SECRET) } catch {
+  try { payload = jwt.verify(authHeader.slice(7), JWT_SECRET) as any } catch {
     return res.status(401).json({ error: 'Invalid or expired session' })
   }
 
@@ -478,7 +478,7 @@ app.post('/api/change-password', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'New password must be at least 6 characters' })
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(payload.username)
+  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(payload.username) as any
   if (!user || !bcrypt.compareSync(String(currentPassword), user.password_hash)) {
     return res.status(400).json({ error: 'Current password is incorrect' })
   }
@@ -520,10 +520,10 @@ app.post('/api/upload', upload.single('file'), (req: Request, res: Response) => 
 })
 
 // Login
-app.get('/api/check-username', (req: Request, res: Response) => {
+app.get('/api/check-username', (req: Request, res: Response) as any => {
   const name = String(req.query.u || '').trim()
   if (name.length < 2) return res.json({ available: false })
-  const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(name)
+  const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(name) as any
   res.json({ available: !exists })
 })
 
@@ -535,8 +535,8 @@ app.post('/api/login', (req: Request, res: Response) => {
 
   const input = String(username).trim()
   const user = input.includes('@')
-    ? db.prepare('SELECT * FROM users WHERE email = ?').get(input.toLowerCase())
-    : db.prepare('SELECT * FROM users WHERE username = ?').get(input)
+    ? db.prepare('SELECT * FROM users WHERE email = ?').get(input.toLowerCase() as any)
+    : db.prepare('SELECT * FROM users WHERE username = ?').get(input) as any
   if (!user || !bcrypt.compareSync(String(password), user.password_hash)) {
     return res.status(401).json({ error: 'Invalid username or password' })
   }
@@ -554,7 +554,7 @@ app.post('/api/login', (req: Request, res: Response) => {
 
 // ── Group REST API ──
 
-app.get('/api/groups', (req: Request, res: Response) => {
+app.get('/api/groups', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const rows = db.prepare(`
@@ -566,7 +566,7 @@ app.get('/api/groups', (req: Request, res: Response) => {
     JOIN chat_groups g ON g.id = gm.group_id
     WHERE gm.username = ?
     ORDER BY g.created_at DESC
-  `).all(auth.username, auth.username)
+  `).all(auth.username, auth.username) as any[]
   res.json({ groups: rows })
 })
 
@@ -586,17 +586,17 @@ app.post('/api/groups', (req: Request, res: Response) => {
   res.json({ group: { id: groupId, name, description, creator: auth.username, role: 'admin', unread_count: 0, member_count: 1, created_at: now } })
 })
 
-app.get('/api/groups/:id', (req: Request, res: Response) => {
+app.get('/api/groups/:id', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)
+  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
-  const group = db.prepare('SELECT * FROM chat_groups WHERE id = ?').get(groupId)
+  const group = db.prepare('SELECT * FROM chat_groups WHERE id = ?').get(groupId) as any
   if (!group) return res.status(404).json({ error: 'Group not found' })
   const members = db.prepare(
     'SELECT username, role FROM group_members WHERE group_id = ? ORDER BY role DESC, username ASC'
-  ).all(groupId)
+  ).all(groupId) as any[]
   res.json({ group: { ...group, role: membership.role }, members })
 })
 
@@ -604,7 +604,7 @@ app.put('/api/groups/:id', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)
+  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
   if (membership.role !== 'admin') return res.status(403).json({ error: 'Admins only' })
   const name = String(req.body.name || '').trim()
@@ -619,22 +619,22 @@ app.delete('/api/groups/:id', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId)
+  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId) as any
   if (!group) return res.status(404).json({ error: 'Group not found' })
   if (group.creator !== auth.username) return res.status(403).json({ error: 'Only the creator can delete this group' })
-  const members = db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId)
+  const members = db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]
   db.prepare('DELETE FROM chat_groups WHERE id = ?').run(groupId)
   for (const m of members) sendToUser(m.username, { type: 'group_deleted', groupId })
   res.json({ message: 'Group deleted' })
 })
 
-app.get('/api/groups/:id/messages', (req: Request, res: Response) => {
+app.get('/api/groups/:id/messages', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const membership = db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)
+  const membership = db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
-  const msgs = db.prepare('SELECT * FROM group_messages WHERE group_id = ? ORDER BY timestamp ASC').all(groupId)
+  const msgs = db.prepare('SELECT * FROM group_messages WHERE group_id = ? ORDER BY timestamp ASC').all(groupId) as any[]
   db.prepare('UPDATE group_members SET last_seen_at = ? WHERE group_id = ? AND username = ?').run(Date.now(), groupId, auth.username)
   res.json({ messages: msgs.map((m: any) => ({ ...m, color: usernameColor(m.username), reactions: getReactions(m.id, 'group') })) })
 })
@@ -643,14 +643,14 @@ app.post('/api/groups/:id/members', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)
+  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
   if (membership.role !== 'admin') return res.status(403).json({ error: 'Admins only' })
   const targetName = String(req.body.username || '').trim()
   if (!targetName) return res.status(400).json({ error: 'Username is required' })
-  const target = db.prepare('SELECT username FROM users WHERE username = ? AND email_verified = 1').get(targetName)
+  const target = db.prepare('SELECT username FROM users WHERE username = ? AND email_verified = 1').get(targetName) as any
   if (!target) return res.status(404).json({ error: 'User not found' })
-  if (db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, target.username)) {
+  if (db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, target.username) as any) {
     return res.status(409).json({ error: 'User is already a member' })
   }
   db.prepare('INSERT INTO group_members (group_id, username, role) VALUES (?, ?, ?)').run(groupId, target.username, 'member')
@@ -664,12 +664,12 @@ app.delete('/api/groups/:id/members/:username', (req: Request, res: Response) =>
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const targetName = req.params.username
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)
+  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
   if (!membership) return res.status(403).json({ error: 'Not a member' })
   if (membership.role !== 'admin') return res.status(403).json({ error: 'Admins only' })
-  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId)
+  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId) as any
   if (group?.creator === targetName) return res.status(403).json({ error: "Can't remove the group creator" })
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, targetName)) {
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, targetName) as any) {
     return res.status(404).json({ error: 'Member not found' })
   }
   db.prepare('DELETE FROM group_members WHERE group_id = ? AND username = ?').run(groupId, targetName)
@@ -682,7 +682,7 @@ app.delete('/api/groups/:id/leave', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId)
+  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId) as any
   if (!group) return res.status(404).json({ error: 'Group not found' })
   if (group.creator === auth.username) return res.status(403).json({ error: 'Creator cannot leave — delete the group instead' })
   db.prepare('DELETE FROM group_members WHERE group_id = ? AND username = ?').run(groupId, auth.username)
@@ -695,13 +695,13 @@ app.put('/api/groups/:id/members/:username/role', (req: Request, res: Response) 
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const targetName = req.params.username
-  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId)
+  const group = db.prepare('SELECT creator FROM chat_groups WHERE id = ?').get(groupId) as any
   if (!group) return res.status(404).json({ error: 'Group not found' })
   if (group.creator !== auth.username) return res.status(403).json({ error: 'Only the creator can change roles' })
   if (targetName === auth.username) return res.status(400).json({ error: "Can't change your own role" })
   const role = req.body.role
   if (!['admin', 'member'].includes(role)) return res.status(400).json({ error: 'Role must be admin or member' })
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, targetName)) {
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, targetName) as any) {
     return res.status(404).json({ error: 'Member not found' })
   }
   db.prepare('UPDATE group_members SET role = ? WHERE group_id = ? AND username = ?').run(role, groupId, targetName)
@@ -711,7 +711,7 @@ app.put('/api/groups/:id/members/:username/role', (req: Request, res: Response) 
 
 // ── DM REST API ──
 
-app.get('/api/users/search', (req: Request, res: Response) => {
+app.get('/api/users/search', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const q = String(req.query.q || '').trim()
@@ -720,7 +720,7 @@ app.get('/api/users/search', (req: Request, res: Response) => {
     SELECT username FROM users
     WHERE username LIKE ? AND username != ? AND email_verified = 1
     LIMIT 10
-  `).all(`%${q}%`, auth.username).map((u: any) => ({
+  `).all(`%${q}%`, auth.username) as any[]).map((u: any) => ({
     username: u.username,
     color: usernameColor(u.username),
     online: isOnline(u.username),
@@ -728,23 +728,23 @@ app.get('/api/users/search', (req: Request, res: Response) => {
   res.json({ users })
 })
 
-app.get('/api/dms', (req: Request, res: Response) => {
+app.get('/api/dms', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partners = db.prepare(`
     SELECT DISTINCT CASE WHEN from_user = ? THEN to_user ELSE from_user END AS partner
     FROM dm_messages WHERE from_user = ? OR to_user = ?
-  `).all(auth.username, auth.username, auth.username).map((r: any) => r.partner)
+  `).all(auth.username, auth.username, auth.username) as any[]).map((r: any) => r.partner)
   const conversations = partners.map((partner: any) => {
     const last = db.prepare(`
       SELECT text, timestamp FROM dm_messages
       WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)
       ORDER BY timestamp DESC LIMIT 1
-    `).get(auth.username, partner, partner, auth.username)
+    `).get(auth.username, partner, partner, auth.username) as any
     const unread = db.prepare(
       "SELECT COUNT(*) as n FROM dm_messages WHERE from_user = ? AND to_user = ? AND status != 'read'"
-    ).get(partner, auth.username).n
-    const user = db.prepare('SELECT last_seen_at FROM users WHERE username = ?').get(partner)
+    ).get(partner, auth.username) as any.n
+    const user = db.prepare('SELECT last_seen_at FROM users WHERE username = ?').get(partner) as any
     return {
       partner,
       color: usernameColor(partner),
@@ -758,17 +758,17 @@ app.get('/api/dms', (req: Request, res: Response) => {
   res.json({ conversations })
 })
 
-app.get('/api/dms/:username', (req: Request, res: Response) => {
+app.get('/api/dms/:username', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = req.params.username
-  const target = db.prepare('SELECT username, last_seen_at FROM users WHERE username = ?').get(partner)
+  const target = db.prepare('SELECT username, last_seen_at FROM users WHERE username = ?').get(partner) as any
   if (!target) return res.status(404).json({ error: 'User not found' })
   const msgs = db.prepare(`
     SELECT * FROM dm_messages
     WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)
     ORDER BY timestamp ASC
-  `).all(auth.username, partner, partner, auth.username)
+  `).all(auth.username, partner, partner, auth.username) as any[]
   // Mark partner's unread messages to me as read
   const unreadIds = msgs.filter((m: any) => m.from_user === partner && m.status !== 'read').map((m: any) => m.id)
   if (unreadIds.length > 0) {
@@ -787,7 +787,7 @@ app.post('/api/dms/:username', (req: Request, res: Response) => {
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = req.params.username
   if (partner === auth.username) return res.status(400).json({ error: "Can't DM yourself" })
-  const target = db.prepare('SELECT username FROM users WHERE username = ? AND email_verified = 1').get(partner)
+  const target = db.prepare('SELECT username FROM users WHERE username = ? AND email_verified = 1').get(partner) as any
   if (!target) return res.status(404).json({ error: 'User not found' })
   const text = String(req.body.text || '').trim().slice(0, 2000)
   const fileUrl = req.body.file_url ? String(req.body.file_url) : null
@@ -828,10 +828,10 @@ app.post('/api/dms/:username', (req: Request, res: Response) => {
 
 // ── User Profile & Avatar ─────────────────────────────────────────────────────
 
-app.get('/api/users/:username', (req: Request, res: Response) => {
+app.get('/api/users/:username', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const user = db.prepare('SELECT username, avatar_url, last_seen_at, created_at FROM users WHERE username = ?').get(req.params.username)
+  const user = db.prepare('SELECT username, avatar_url, last_seen_at, created_at FROM users WHERE username = ?').get(req.params.username) as any
   if (!user) return res.status(404).json({ error: 'User not found' })
   res.json({ user: { ...user, online: isOnline(user.username) } })
 })
@@ -847,7 +847,7 @@ app.post('/api/avatar', upload.single('avatar'), (req: Request, res: Response) =
 
 // ── Message Search ────────────────────────────────────────────────────────────
 
-app.get('/api/search/messages', (req: Request, res: Response) => {
+app.get('/api/search/messages', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const q = String(req.query.q || '').trim()
@@ -859,13 +859,13 @@ app.get('/api/search/messages', (req: Request, res: Response) => {
     FROM dm_messages
     WHERE deleted = 0 AND text LIKE ? AND (from_user = ? OR to_user = ?)
     ORDER BY timestamp DESC LIMIT 20
-  `).all(like, auth.username, auth.username).map((r: any) => ({
+  `).all(like, auth.username, auth.username) as any[]).map((r: any) => ({
     ...r,
     partner: r.from_user === auth.username ? r.to_user : r.from_user,
     color: usernameColor(r.from_user),
   }))
   // Search group messages
-  const myGroups = db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username).map((r: any) => r.group_id)
+  const myGroups = db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username) as any[]).map((r: any) => r.group_id)
   let groupResults: any[] = []
   if (myGroups.length > 0) {
     groupResults = db.prepare(`
@@ -875,7 +875,7 @@ app.get('/api/search/messages', (req: Request, res: Response) => {
       JOIN chat_groups cg ON cg.id = gm.group_id
       WHERE gm.deleted = 0 AND gm.text LIKE ? AND gm.group_id IN (${myGroups.map(() => '?').join(',')})
       ORDER BY gm.timestamp DESC LIMIT 20
-    `).all(like, ...myGroups).map((r: any) => ({
+    `).all(like, ...myGroups) as any[]).map((r: any) => ({
       ...r,
       color: usernameColor(r.from_user),
     }))
@@ -895,7 +895,7 @@ app.delete('/api/dm/:partner', (req: Request, res: Response) => {
 
 // ── Media Gallery ───────────────────────────────────────────────────────────
 
-app.get('/api/media/dm/:partner', (req: Request, res: Response) => {
+app.get('/api/media/dm/:partner', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const partner = req.params.partner
@@ -905,15 +905,15 @@ app.get('/api/media/dm/:partner', (req: Request, res: Response) => {
     WHERE deleted = 0 AND file_url IS NOT NULL
       AND ((from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?))
     ORDER BY timestamp DESC LIMIT 50
-  `).all(auth.username, partner, partner, auth.username)
+  `).all(auth.username, partner, partner, auth.username) as any[]
   res.json({ files })
 })
 
-app.get('/api/media/group/:id', (req: Request, res: Response) => {
+app.get('/api/media/group/:id', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
   const files = db.prepare(`
@@ -921,7 +921,7 @@ app.get('/api/media/group/:id', (req: Request, res: Response) => {
     FROM group_messages
     WHERE deleted = 0 AND file_url IS NOT NULL AND group_id = ?
     ORDER BY timestamp DESC LIMIT 50
-  `).all(groupId)
+  `).all(groupId) as any[]
   res.json({ files })
 })
 
@@ -932,10 +932,10 @@ app.post('/api/groups/:id/pins/:msgId', (req: Request, res: Response) => {
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const msgId = Number(req.params.msgId)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
-  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId)
+  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId) as any
   if (!msg || msg.deleted) return res.status(404).json({ error: 'Message not found' })
   db.prepare('INSERT OR IGNORE INTO pinned_messages (group_id, message_id, pinned_by, pinned_at) VALUES (?, ?, ?, ?)').run(groupId, msgId, auth.username, Date.now())
   broadcastToGroup(groupId, { type: 'pins_updated', groupId })
@@ -947,7 +947,7 @@ app.delete('/api/groups/:id/pins/:msgId', (req: Request, res: Response) => {
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const msgId = Number(req.params.msgId)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
   db.prepare('DELETE FROM pinned_messages WHERE group_id = ? AND message_id = ?').run(groupId, msgId)
@@ -955,11 +955,11 @@ app.delete('/api/groups/:id/pins/:msgId', (req: Request, res: Response) => {
   res.json({ message: 'Unpinned' })
 })
 
-app.get('/api/groups/:id/pins', (req: Request, res: Response) => {
+app.get('/api/groups/:id/pins', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
   const pins = db.prepare(`
@@ -968,7 +968,7 @@ app.get('/api/groups/:id/pins', (req: Request, res: Response) => {
     JOIN group_messages gm ON gm.id = pm.message_id
     WHERE pm.group_id = ? AND gm.deleted = 0
     ORDER BY pm.pinned_at DESC
-  `).all(groupId).map((p: any) => ({ ...p, color: usernameColor(p.username) }))
+  `).all(groupId) as any[]).map((p: any) => ({ ...p, color: usernameColor(p.username) }))
   res.json({ pins })
 })
 
@@ -990,10 +990,10 @@ app.delete('/api/block/:username', (req: Request, res: Response) => {
   res.json({ message: 'Unblocked' })
 })
 
-app.get('/api/blocked', (req: Request, res: Response) => {
+app.get('/api/blocked', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  const blocked = db.prepare('SELECT blocked, created_at FROM blocked_users WHERE blocker = ?').all(auth.username)
+  const blocked = db.prepare('SELECT blocked, created_at FROM blocked_users WHERE blocker = ?').all(auth.username) as any[]
   res.json({ blocked })
 })
 
@@ -1010,13 +1010,13 @@ app.post('/api/forward', (req: Request, res: Response) => {
   let originalFile = null
   let originalFrom = ''
   if (messageType === 'dm') {
-    const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(messageId)
+    const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(messageId) as any
     if (!msg || msg.deleted) return res.status(404).json({ error: 'Message not found' })
     originalText = msg.text
     originalFrom = msg.from_user
     if (msg.file_url) originalFile = { url: msg.file_url, name: msg.file_name, type: msg.file_type, size: msg.file_size }
   } else if (messageType === 'group') {
-    const msg = db.prepare('SELECT * FROM group_messages WHERE id = ?').get(messageId)
+    const msg = db.prepare('SELECT * FROM group_messages WHERE id = ?').get(messageId) as any
     if (!msg || msg.deleted) return res.status(404).json({ error: 'Message not found' })
     originalText = msg.text
     originalFrom = msg.username
@@ -1032,7 +1032,7 @@ app.post('/api/forward', (req: Request, res: Response) => {
       auth.username, toPartner, fwdText, ts,
       originalFile?.url ?? null, originalFile?.name ?? null, originalFile?.type ?? null, originalFile?.size ?? null
     )
-    const newMsg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(row.lastInsertRowid)
+    const newMsg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(row.lastInsertRowid) as any
     const payload = { type: 'dm_message', message: { ...newMsg, color: usernameColor(newMsg.from_user) } }
     sendToUser(auth.username, payload)
     sendToUser(toPartner, payload)
@@ -1041,7 +1041,7 @@ app.post('/api/forward', (req: Request, res: Response) => {
   // Forward to group
   if (toGroupId) {
     const gid = Number(toGroupId)
-    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(gid, auth.username)) {
+    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(gid, auth.username) as any) {
       return res.status(403).json({ error: 'Not a member of target group' })
     }
     const ts = Date.now()
@@ -1049,7 +1049,7 @@ app.post('/api/forward', (req: Request, res: Response) => {
       gid, auth.username, fwdText, ts,
       originalFile?.url ?? null, originalFile?.name ?? null, originalFile?.type ?? null, originalFile?.size ?? null
     )
-    const newMsg = db.prepare('SELECT * FROM group_messages WHERE id = last_insert_rowid()').get()
+    const newMsg = db.prepare('SELECT * FROM group_messages WHERE id = last_insert_rowid()').get() as any
     broadcastToGroup(gid, {
       type: 'group_message', groupId: gid,
       message: { ...newMsg, color: usernameColor(newMsg.username) }
@@ -1063,7 +1063,7 @@ app.post('/api/forward', (req: Request, res: Response) => {
 
 // Helper: get reactions for a message
 function getReactions(messageId: number, messageType: string): AggregatedReaction[] {
-  return db.prepare('SELECT emoji, GROUP_CONCAT(username) as users FROM message_reactions WHERE message_id = ? AND message_type = ? GROUP BY emoji').all(messageId, messageType).map((r: any) => ({ emoji: r.emoji, users: r.users.split(',') }))
+  return db.prepare('SELECT emoji, GROUP_CONCAT(username) as users FROM message_reactions WHERE message_id = ? AND message_type = ? GROUP BY emoji').all(messageId, messageType) as any[]).map((r: any) => ({ emoji: r.emoji, users: r.users.split(',') }))
 }
 
 // Edit DM message
@@ -1073,7 +1073,7 @@ app.put('/api/dms/:partner/messages/:id', (req: Request, res: Response) => {
   const msgId = Number(req.params.id)
   const text = String(req.body.text || '').trim().slice(0, 2000)
   if (!text) return res.status(400).json({ error: 'Text is required' })
-  const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(msgId)
+  const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(msgId) as any
   if (!msg) return res.status(404).json({ error: 'Message not found' })
   if (msg.from_user !== auth.username) return res.status(403).json({ error: 'Can only edit your own messages' })
   if (msg.deleted) return res.status(400).json({ error: 'Message is deleted' })
@@ -1090,7 +1090,7 @@ app.delete('/api/dms/:partner/messages/:id', (req: Request, res: Response) => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const msgId = Number(req.params.id)
-  const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(msgId)
+  const msg = db.prepare('SELECT * FROM dm_messages WHERE id = ?').get(msgId) as any
   if (!msg) return res.status(404).json({ error: 'Message not found' })
   if (msg.from_user !== auth.username) return res.status(403).json({ error: 'Can only delete your own messages' })
   db.prepare('UPDATE dm_messages SET deleted = 1, text = \'\' WHERE id = ?').run(msgId)
@@ -1109,10 +1109,10 @@ app.put('/api/groups/:id/messages/:msgId', (req: Request, res: Response) => {
   const msgId = Number(req.params.msgId)
   const text = String(req.body.text || '').trim().slice(0, 2000)
   if (!text) return res.status(400).json({ error: 'Text is required' })
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
-  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId)
+  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId) as any
   if (!msg) return res.status(404).json({ error: 'Message not found' })
   if (msg.username !== auth.username) return res.status(403).json({ error: 'Can only edit your own messages' })
   if (msg.deleted) return res.status(400).json({ error: 'Message is deleted' })
@@ -1127,13 +1127,13 @@ app.delete('/api/groups/:id/messages/:msgId', (req: Request, res: Response) => {
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const groupId = Number(req.params.id)
   const msgId = Number(req.params.msgId)
-  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)) {
+  if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any) {
     return res.status(403).json({ error: 'Not a member' })
   }
-  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId)
+  const msg = db.prepare('SELECT * FROM group_messages WHERE id = ? AND group_id = ?').get(msgId, groupId) as any
   if (!msg) return res.status(404).json({ error: 'Message not found' })
   // Allow message author or group admins to delete
-  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username)
+  const membership = db.prepare('SELECT role FROM group_members WHERE group_id = ? AND username = ?').get(groupId, auth.username) as any
   if (msg.username !== auth.username && membership?.role !== 'admin') {
     return res.status(403).json({ error: 'Only the author or admins can delete messages' })
   }
@@ -1150,7 +1150,7 @@ app.post('/api/reactions', (req: Request, res: Response) => {
   if (!messageId || !messageType || !emoji) return res.status(400).json({ error: 'Missing fields' })
   if (!['dm', 'group', 'channel'].includes(messageType)) return res.status(400).json({ error: 'Invalid message type' })
   // Toggle: remove if already exists, add if not
-  const existing = db.prepare('SELECT id FROM message_reactions WHERE message_id = ? AND message_type = ? AND username = ? AND emoji = ?').get(messageId, messageType, auth.username, emoji)
+  const existing = db.prepare('SELECT id FROM message_reactions WHERE message_id = ? AND message_type = ? AND username = ? AND emoji = ?').get(messageId, messageType, auth.username, emoji) as any
   if (existing) {
     db.prepare('DELETE FROM message_reactions WHERE id = ?').run(existing.id)
   } else {
@@ -1159,21 +1159,21 @@ app.post('/api/reactions', (req: Request, res: Response) => {
   const reactions = getReactions(messageId, messageType)
   // Broadcast reaction update
   if (messageType === 'dm') {
-    const msg = db.prepare('SELECT from_user, to_user FROM dm_messages WHERE id = ?').get(messageId)
+    const msg = db.prepare('SELECT from_user, to_user FROM dm_messages WHERE id = ?').get(messageId) as any
     if (msg) {
       const update = { type: 'reaction_update', messageId, messageType, reactions }
       sendToUser(msg.from_user, update)
       sendToUser(msg.to_user, update)
     }
   } else if (messageType === 'group') {
-    const msg = db.prepare('SELECT group_id FROM group_messages WHERE id = ?').get(messageId)
+    const msg = db.prepare('SELECT group_id FROM group_messages WHERE id = ?').get(messageId) as any
     if (msg) broadcastToGroup(msg.group_id, { type: 'reaction_update', messageId, messageType, reactions })
   }
   res.json({ reactions })
 })
 
 // Get reactions for a message
-app.get('/api/reactions/:messageType/:messageId', (req: Request, res: Response) => {
+app.get('/api/reactions/:messageType/:messageId', (req: Request, res: Response) as any => {
   const auth = getAuth(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const reactions = getReactions(Number(req.params.messageId), req.params.messageType)
@@ -1205,7 +1205,7 @@ function sendToUser(username: string, data: Record<string, unknown>): void {
 
 function broadcastToGroup(groupId: number, data: Record<string, unknown>): void {
   const members = new Set(
-    db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId).map((m: any) => m.username)
+    db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]).map((m: any) => m.username)
   )
   const json = JSON.stringify(data)
   for (const [ws, client] of clients) {
@@ -1226,7 +1226,7 @@ wss.on('connection', (ws: WebSocket) => {
 
   ws.on('close', () => {
     try {
-      const client = clients.get(ws)
+      const client = clients.get(ws) as any
       if (client) {
         clients.delete(ws)
         const now = Date.now()
@@ -1248,7 +1248,7 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
   if (msg.type === 'join') {
     let payload
     try {
-      payload = jwt.verify(String(msg.token), JWT_SECRET)
+      payload = jwt.verify(String(msg.token), JWT_SECRET) as any
     } catch {
       ws.send(JSON.stringify({ type: 'error', message: 'Invalid or expired session. Please log in again.' }))
       ws.close()
@@ -1271,11 +1271,11 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
     // Promote any pending DMs to 'delivered' now that the user is online
     const senders = db.prepare(
       "SELECT DISTINCT from_user FROM dm_messages WHERE to_user = ? AND status = 'sent'"
-    ).all(username)
+    ).all(username) as any[]
     for (const { from_user } of senders as { from_user: string }[]) {
       const ids = db.prepare(
         "SELECT id FROM dm_messages WHERE from_user = ? AND to_user = ? AND status = 'sent'"
-      ).all(from_user, username).map((r: any) => r.id)
+      ).all(from_user, username) as any[]).map((r: any) => r.id)
       if (ids.length) {
         db.prepare(`UPDATE dm_messages SET status = 'delivered' WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids)
         sendToUser(from_user, { type: 'dm_delivered', byUser: username, ids })
@@ -1287,7 +1287,7 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
   }
 
   if (msg.type === 'typing') {
-    const client = clients.get(ws)
+    const client = clients.get(ws) as any
     if (!client) return
     const isTyping = msg.isTyping !== false
     const json = JSON.stringify({ type: 'typing', username: client.username, isTyping })
@@ -1297,7 +1297,7 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
   }
 
   if (msg.type === 'message') {
-    const client = clients.get(ws)
+    const client = clients.get(ws) as any
     if (!client) return
 
     const text = String(msg.text).trim().slice(0, 1000)
@@ -1317,7 +1317,7 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
   }
 
   if (msg.type === 'group_message') {
-    const client = clients.get(ws)
+    const client = clients.get(ws) as any
     if (!client) return
     const groupId = Number(msg.groupId)
     const text = String(msg.text || '').trim().slice(0, 2000)
@@ -1326,7 +1326,7 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
     const fileType = fileUrl ? String(msg.file_type || 'application/octet-stream') : null
     const fileSize = fileUrl ? (Number(msg.file_size) || 0) : null
     if (!groupId || (!text && !fileUrl)) return
-    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, client.username)) return
+    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, client.username) as any) return
     const replyToId = msg.reply_to_id ? Number(msg.reply_to_id) : null
     const replyToText = replyToId ? String(msg.reply_to_text || '').slice(0, 200) : null
     const replyToUsername = replyToId ? String(msg.reply_to_username || '') : null
@@ -1348,24 +1348,24 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
   }
 
   if (['call_invite', 'call_accept', 'call_reject', 'call_end'].includes(msg.type)) {
-    const client = clients.get(ws)
+    const client = clients.get(ws) as any
     if (!client || !(msg as any).toUser) return
     sendToUser((msg as any).toUser, { type: msg.type, fromUser: client.username, callMode: (msg as any).callMode })
   }
 
   if (msg.type === 'dm_typing') {
-    const client = clients.get(ws)
+    const client = clients.get(ws) as any
     if (!client || !msg.toUser) return
     sendToUser(msg.toUser, { type: 'dm_typing', fromUser: client.username, isTyping: msg.isTyping !== false })
   }
 
   if (msg.type === 'group_typing') {
-    const client = clients.get(ws)
+    const client = clients.get(ws) as any
     if (!client) return
     const groupId = Number(msg.groupId)
     if (!groupId) return
-    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, client.username)) return
-    const members = new Set(db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId).map((m: any) => m.username))
+    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, client.username) as any) return
+    const members = new Set(db.prepare('SELECT username FROM group_members WHERE group_id = ?').all(groupId) as any[]).map((m: any) => m.username))
     const json = JSON.stringify({ type: 'group_typing', groupId, username: client.username, isTyping: msg.isTyping !== false })
     for (const [cws, cclient] of clients) {
       if (cclient.username !== client.username && members.has(cclient.username) && cws.readyState === 1) cws.send(json)
@@ -1375,7 +1375,7 @@ function handleWsMessage(ws: WebSocket, msg: WsIncomingMessage) {
 
 // SPA fallback — must come after all API routes
 if (existsSync(distDir)) {
-  app.get('*', (_: Request, res: Response) => res.sendFile(join(distDir, 'index.html')))
+  app.get('*', (_: Request, res: Response) as any => res.sendFile(join(distDir, 'index.html')))
 }
 
 const PORT = process.env.PORT || 3001
