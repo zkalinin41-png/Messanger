@@ -6,7 +6,7 @@ import cors from 'cors'
 import Database from 'better-sqlite3'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
-import { Resend } from 'resend'
+import nodemailer from 'nodemailer'
 import multer from 'multer'
 import { AccessToken } from 'livekit-server-sdk'
 import { randomUUID } from 'crypto'
@@ -202,20 +202,23 @@ db.exec(`
   )
 `)
 
-// --- Nodemailer (Ethereal dev account, lazy-initialized) ---
-const resend = new Resend(process.env.RESEND_API_KEY || '')
+// --- Email (Gmail SMTP) ---
+const GMAIL_USER = process.env.GMAIL_USER || 'zkalinin41@gmail.com'
+const gmailTransporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD || '',
+  },
+})
 
 async function sendMail(to: string, subject: string, html: string): Promise<void> {
-  const { error } = await resend.emails.send({
-    from: 'Chat App <onboarding@resend.dev>',
+  await gmailTransporter.sendMail({
+    from: `"Chat App" <${GMAIL_USER}>`,
     to,
     subject,
     html,
   })
-  if (error) {
-    console.error('❌ Email send failed:', error)
-    throw new Error(`Email failed: ${error.message}`)
-  }
   console.log(`📨 Email sent to ${to}`)
 }
 
