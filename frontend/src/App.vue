@@ -116,11 +116,8 @@ onMounted(() => {
 function handleAuthenticated() {
   showSettings.value = false
   requestNotificationPermission()
-  if (connected.value) {
-    join(token.value)
-  } else {
-    connect()
-  }
+  disconnect()
+  connect()
 }
 
 watch(connected, (isConnected) => {
@@ -131,6 +128,7 @@ watch(connected, (isConnected) => {
 
 watch(error, (val) => {
   if (val === 'Invalid or expired session. Please log in again.') {
+    disconnect()
     logout()
   }
 })

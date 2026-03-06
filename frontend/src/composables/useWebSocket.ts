@@ -6,7 +6,7 @@ import { callState, callPartner, callToken, callUrl, callMode, fetchVideoToken, 
 import type { OnlineUser, OnlineStatus, ChatMessage, Conversation, ReplyTo, FileData } from '../types'
 
 const WS_URL: string = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
-const { username } = useAuth()
+const { username, token } = useAuth()
 
 // ── Singleton shared state ───────────────────────────────────────────────────
 const ws: Ref<WebSocket | null> = ref(null)
@@ -29,6 +29,15 @@ const _error: Ref<string | null> = ref(null)
 setWsSender((payload) => {
   if (ws.value?.readyState === WebSocket.OPEN) ws.value.send(JSON.stringify(payload))
 })
+
+// ── Module-level join (called directly from onopen to avoid watcher timing issues) ──
+function _joinIfAuthenticated(): void {
+  if (joined.value || !token.value) return
+  if (ws.value?.readyState === WebSocket.OPEN) {
+    ws.value.send(JSON.stringify({ type: 'join', token: token.value }))
+    joined.value = true
+  }
+}
 
 // ── Timers ───────────────────────────────────────────────────────────────────
 const typingTimers: Record<string, ReturnType<typeof setTimeout>> = {}
@@ -319,6 +328,7 @@ function connect(): void {
   ws.value.onopen = () => {
     connected.value = true
     _error.value = null
+    _joinIfAuthenticated()
   }
 
   ws.value.onmessage = (event) => {
