@@ -1379,6 +1379,6 @@ if (existsSync(distDir)) {
 }
 
 const PORT = process.env.PORT || 3001
-server.listen(PORT, () => {
+server.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Server running on http://localhost:${PORT}`)
 })
