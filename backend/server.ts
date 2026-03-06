@@ -501,9 +501,15 @@ app.post('/api/login', async (req: Request, res: Response) => {
   }
 
   const input = String(username).trim()
-  const user = input.includes('@')
-    ? await dbGet('SELECT * FROM users WHERE email = ?', input.toLowerCase() as any)
-    : await dbGet('SELECT * FROM users WHERE username = ?', input) as any
+  let user: any
+  try {
+    user = input.includes('@')
+      ? await dbGet('SELECT * FROM users WHERE email = ?', input.toLowerCase())
+      : await dbGet('SELECT * FROM users WHERE username = ?', input)
+  } catch (err: any) {
+    console.error('Login DB error:', err.message)
+    return res.status(500).json({ error: 'Server error' })
+  }
   if (!user || !bcrypt.compareSync(String(password), user.password_hash)) {
     return res.status(401).json({ error: 'Invalid username or password' })
   }
