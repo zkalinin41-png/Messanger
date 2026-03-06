@@ -6,7 +6,7 @@ import cors from 'cors'
 import Database from 'better-sqlite3'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
-import nodemailer from 'nodemailer'
+import { Resend } from 'resend'
 import multer from 'multer'
 import { AccessToken } from 'livekit-server-sdk'
 import { randomUUID } from 'crypto'
@@ -203,32 +203,20 @@ db.exec(`
 `)
 
 // --- Nodemailer (Ethereal dev account, lazy-initialized) ---
-let _transporter: nodemailer.Transporter | null = null
-
-async function getTransporter(): Promise<nodemailer.Transporter> {
-  if (_transporter) return _transporter
-  const account = await nodemailer.createTestAccount()
-  _transporter = nodemailer.createTransport({
-    host: 'smtp.ethereal.email',
-    port: 587,
-    auth: { user: account.user, pass: account.pass },
-  })
-  console.log('\n📧 Ethereal test account ready')
-  console.log(`   User: ${account.user}`)
-  console.log(`   Pass: ${account.pass}`)
-  console.log(`   View emails at: https://ethereal.email/messages\n`)
-  return _transporter
-}
+const resend = new Resend(process.env.RESEND_API_KEY || '')
 
 async function sendMail(to: string, subject: string, html: string): Promise<void> {
-  const t = await getTransporter()
-  const info = await t.sendMail({
-    from: '"Chat App" <noreply@chatapp.dev>',
+  const { error } = await resend.emails.send({
+    from: 'Chat App <onboarding@resend.dev>',
     to,
     subject,
     html,
   })
-  console.log(`📨 Email preview: ${nodemailer.getTestMessageUrl(info)}`)
+  if (error) {
+    console.error('❌ Email send failed:', error)
+    throw new Error(`Email failed: ${error.message}`)
+  }
+  console.log(`📨 Email sent to ${to}`)
 }
 
 function verificationEmailHtml(username: string, verifyUrl: string): string {
@@ -865,10 +853,10 @@ app.get('/api/search/messages', (req: Request, res: Response) => {
     color: usernameColor(r.from_user),
   }))
   // Search group messages
-    const myGroups = (db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username) as any[]).map((r: any) => r.group_id)
-let groupResults: any[] = []
-if (myGroups.length > 0) {
-  groupResults = db.prepare(`
+  const myGroups = (db.prepare('SELECT group_id FROM group_members WHERE username = ?').all(auth.username) as any[]).map((r: any) => r.group_id)
+  let groupResults: any[] = []
+  if (myGroups.length > 0) {
+    groupResults = db.prepare(`
       SELECT gm.id, gm.username as from_user, gm.text, gm.timestamp, gm.group_id,
              cg.name as group_name, 'group' as source_type
       FROM group_messages gm
@@ -876,11 +864,11 @@ if (myGroups.length > 0) {
       WHERE gm.deleted = 0 AND gm.text LIKE ? AND gm.group_id IN (${myGroups.map(() => '?').join(',')})
       ORDER BY gm.timestamp DESC LIMIT 20
     `).all(like, ...myGroups).map((r: any) => ({
-    ...r,
-    color: usernameColor(r.from_user),
-  }))
-}
-res.json({ results: [...dmResults, ...groupResults].sort((a, b) => b.timestamp - a.timestamp).slice(0, 30) })
+      ...r,
+      color: usernameColor(r.from_user),
+    }))
+  }
+  res.json({ results: [...dmResults, ...groupResults].sort((a, b) => b.timestamp - a.timestamp).slice(0, 30) })
 })
 // ── Conversation Clear ──────────────────────────────────────────────────────
 
