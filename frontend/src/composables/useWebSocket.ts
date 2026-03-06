@@ -321,11 +321,17 @@ function connect(): void {
   clearTimeout(reconnectTimer!)
   reconnectTimer = null
   const state = ws.value?.readyState
-  if (state === WebSocket.CONNECTING || state === WebSocket.OPEN) return
+  console.log('[WS] connect() called, readyState:', state, 'url:', WS_URL)
+  if (state === WebSocket.CONNECTING || state === WebSocket.OPEN) {
+    console.log('[WS] already connecting/open, skipping')
+    return
+  }
 
   ws.value = new WebSocket(WS_URL)
+  console.log('[WS] new WebSocket created')
 
   ws.value.onopen = () => {
+    console.log('[WS] onopen — connected, token present:', !!token.value)
     connected.value = true
     _error.value = null
     _joinIfAuthenticated()
@@ -335,13 +341,15 @@ function connect(): void {
     try { handleMessage(JSON.parse(event.data)) } catch { /* ignore parse errors */ }
   }
 
-  ws.value.onclose = () => {
+  ws.value.onclose = (e) => {
+    console.log('[WS] onclose — code:', e.code, 'reason:', e.reason)
     connected.value = false
     joined.value = false
     reconnectTimer = setTimeout(connect, 1000)
   }
 
-  ws.value.onerror = () => {
+  ws.value.onerror = (e) => {
+    console.log('[WS] onerror', e)
     _error.value = 'Connection error'
   }
 }

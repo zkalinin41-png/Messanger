@@ -114,6 +114,7 @@ onMounted(() => {
 })
 
 function handleAuthenticated() {
+  console.log('[Auth] handleAuthenticated called, connected:', connected.value, 'joined:', joined.value, 'token:', !!token.value)
   showSettings.value = false
   requestNotificationPermission()
   disconnect()

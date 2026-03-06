@@ -119,7 +119,7 @@ async function handleLogin() {
   loading.value = true
   try {
     await login(username.value.trim(), password.value)
-    emit('authenticated')
+    window.location.reload()
   } catch (err) {
     if (err.needsVerification) {
       pendingEmail.value = err.email || ''
