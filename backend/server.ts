@@ -183,14 +183,17 @@ async function initDb() {
 // --- Email (Gmail SMTP) ---
 const GMAIL_USER = process.env.GMAIL_USER || 'e.kalinin135@gmail.com'
 const gmailTransporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false, // STARTTLS
+  family: 4,     // force IPv4 (Railway blocks IPv6 SMTP)
   auth: {
     user: GMAIL_USER,
     pass: process.env.GMAIL_APP_PASSWORD || '',
   },
-  connectionTimeout: 5000,
-  greetingTimeout: 5000,
-  socketTimeout: 10000,
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
 })
 
 async function sendMail(to: string, subject: string, html: string): Promise<void> {
