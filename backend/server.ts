@@ -6,7 +6,6 @@ import cors from 'cors'
 import { dbExec, dbGet, dbAll, dbRun, dbColumnExists } from './database.js'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
-import nodemailer from 'nodemailer'
 import multer from 'multer'
 import { AccessToken } from 'livekit-server-sdk'
 import { randomUUID } from 'crypto'
@@ -180,33 +179,28 @@ async function initDb() {
   `)
 }
 
-// --- Email (Gmail SMTP) ---
-const GMAIL_USER = process.env.GMAIL_USER || 'e.kalinin135@gmail.com'
-const gmailTransporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 587,
-  secure: false, // STARTTLS
-  family: 4,     // force IPv4 (Railway blocks IPv6 SMTP)
-  auth: {
-    user: GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD || '',
-  },
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 15000,
-})
+// --- Email (SendGrid HTTP API) ---
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY || ''
+const FROM_EMAIL = process.env.GMAIL_USER || 'e.kalinin135@gmail.com'
 
 async function sendMail(to: string, subject: string, html: string): Promise<void> {
-  const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Email send timed out')), 15000))
-  await Promise.race([
-    gmailTransporter.sendMail({
-      from: `"Chat App" <${GMAIL_USER}>`,
-      to,
+  const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${SENDGRID_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      personalizations: [{ to: [{ email: to }] }],
+      from: { email: FROM_EMAIL, name: 'Chat App' },
       subject,
-      html,
+      content: [{ type: 'text/html', value: html }],
     }),
-    timeout,
-  ])
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`SendGrid error ${res.status}: ${err}`)
+  }
   console.log(`📨 Email sent to ${to}`)
 }
 
