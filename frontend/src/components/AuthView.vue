@@ -254,7 +254,7 @@ async function handleResetPassword() {
     <!-- ── Login form ── -->
     <template v-if="mode === 'login'">
       <CardContent class="space-y-3">
-        <p v-if="info" class="text-xs text-emerald-600 bg-emerald-50 rounded-md px-3 py-2">{{ info }}</p>
+        <p v-if="info" class="text-xs text-foreground bg-muted rounded-md px-3 py-2">{{ info }}</p>
         <Input v-model="username" placeholder="Username or email" autocomplete="username"
                :disabled="loading" @keydown.enter="handleLogin" />
         <Input v-model="password" type="password" placeholder="Password" autocomplete="current-password"
@@ -284,7 +284,7 @@ async function handleResetPassword() {
           <Input v-model="username" placeholder="Username" maxlength="24" autocomplete="username"
                  :disabled="loading" @keydown.enter="handleRegister" />
           <span v-if="checkingUsername" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">…</span>
-          <span v-else-if="usernameAvailable === true" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-emerald-600">✓ Available</span>
+          <span v-else-if="usernameAvailable === true" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-foreground">✓ Available</span>
           <span v-else-if="usernameAvailable === false" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-destructive">✗ Taken</span>
         </div>
         <Input v-model="email" type="email" placeholder="Email address" autocomplete="email"
@@ -309,7 +309,7 @@ async function handleResetPassword() {
     <template v-else-if="mode === 'pending-verification'">
       <CardContent class="space-y-3 text-sm text-muted-foreground text-center">
         <p>Click the link in the email to activate your account.</p>
-        <p v-if="info" class="text-xs text-emerald-600 bg-emerald-50 rounded-md px-3 py-2">{{ info }}</p>
+        <p v-if="info" class="text-xs text-foreground bg-muted rounded-md px-3 py-2">{{ info }}</p>
         <p v-if="error" class="text-xs text-destructive">{{ error }}</p>
       </CardContent>
       <CardFooter class="flex flex-col gap-3">
@@ -326,7 +326,7 @@ async function handleResetPassword() {
     <!-- ── Forgot password ── -->
     <template v-else-if="mode === 'forgot-password'">
       <CardContent class="space-y-3">
-        <p v-if="info" class="text-xs text-emerald-600 bg-emerald-50 rounded-md px-3 py-2">{{ info }}</p>
+        <p v-if="info" class="text-xs text-foreground bg-muted rounded-md px-3 py-2">{{ info }}</p>
         <Input v-if="!info" v-model="email" type="email" placeholder="your@email.com"
                autocomplete="email" :disabled="loading" @keydown.enter="handleForgotPassword" />
         <p v-if="error" class="text-xs text-destructive">{{ error }}</p>

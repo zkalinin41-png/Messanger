@@ -311,9 +311,9 @@ const isMine = (name) => name === username.value
       <!-- Pinned messages panel -->
       <div v-if="showPins && pinnedMessages.length > 0" class="border-b border-border bg-muted/20 max-h-32 overflow-y-auto px-4 py-2 space-y-1">
         <div v-for="pin in pinnedMessages" :key="pin.id" class="flex items-center gap-2 text-xs">
-          <span class="font-semibold" :style="{ color: pin.color }">{{ pin.username }}</span>
+          <span class="font-semibold text-foreground">{{ pin.username }}</span>
           <span class="text-muted-foreground truncate flex-1">{{ pin.text || '📎 File' }}</span>
-          <button class="text-[10px] text-muted-foreground hover:text-destructive" @click="unpinMessage(pin.message_id)">Unpin</button>
+          <button class="text-[10px] text-muted-foreground hover:text-foreground" @click="unpinMessage(pin.message_id)">Unpin</button>
         </div>
       </div>
 
@@ -338,8 +338,7 @@ const isMine = (name) => name === username.value
           >
             <!-- Avatar -->
             <div
-              class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5 select-none"
-              :style="{ backgroundColor: grp.color }"
+              class="w-8 h-8 rounded-full flex items-center justify-center bg-foreground text-background text-xs font-bold flex-shrink-0 mt-0.5 select-none"
             >
               {{ grp.username.slice(0, 2).toUpperCase() }}
             </div>
@@ -347,7 +346,7 @@ const isMine = (name) => name === username.value
             <div class="flex-1 min-w-0">
               <!-- Username + timestamp -->
               <div class="flex items-baseline gap-2 mb-0.5">
-                <span class="text-sm font-semibold" :style="{ color: grp.color }">
+                <span class="text-sm font-semibold text-foreground">
                   {{ grp.username }}
                 </span>
                 <span class="text-[11px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
@@ -366,7 +365,7 @@ const isMine = (name) => name === username.value
                   v-if="item.reply_to_id"
                   class="mb-0.5 flex items-start gap-1.5 pl-1 border-l-2 border-muted-foreground/30 opacity-70 hover:opacity-100 transition-opacity"
                 >
-                  <span class="text-xs font-semibold" :style="{ color: grp.color }">{{ item.reply_to_username }}</span>
+                  <span class="text-xs font-semibold text-foreground">{{ item.reply_to_username }}</span>
                   <p class="text-xs text-muted-foreground truncate">{{ item.reply_to_text || '📎 File' }}</p>
                 </div>
 
@@ -380,14 +379,14 @@ const isMine = (name) => name === username.value
                 <div v-else-if="editingMsg?.id === item.id" class="flex flex-col gap-1 max-w-md">
                   <textarea
                     v-model="editText"
-                    class="rounded-xl border border-violet-500 bg-background px-3 py-2 text-sm outline-none resize-none leading-relaxed"
+                    class="rounded-xl border border-foreground bg-background px-3 py-2 text-sm outline-none resize-none leading-relaxed"
                     rows="2"
                     @keydown.enter.prevent="saveEdit"
                     @keydown.escape="cancelEdit"
                   />
                   <div class="flex gap-1 justify-end">
                     <button class="text-[10px] px-2 py-0.5 rounded text-muted-foreground hover:text-foreground" @click="cancelEdit">Cancel</button>
-                    <button class="text-[10px] px-2 py-0.5 rounded bg-violet-600 text-white hover:bg-violet-700" @click="saveEdit">Save</button>
+                    <button class="text-[10px] px-2 py-0.5 rounded bg-foreground text-background hover:bg-foreground/80" @click="saveEdit">Save</button>
                   </div>
                 </div>
 
@@ -493,8 +492,8 @@ const isMine = (name) => name === username.value
 
     <!-- Reply quote bar -->
     <div v-if="replyingTo" class="px-4 py-2 border-t border-border bg-muted/30 flex items-center gap-2">
-      <div class="flex-1 min-w-0 border-l-2 border-violet-500 pl-2">
-        <p class="text-xs font-semibold text-violet-500">{{ replyingTo.username }}</p>
+      <div class="flex-1 min-w-0 border-l-2 border-foreground pl-2">
+        <p class="text-xs font-semibold text-foreground">{{ replyingTo.username }}</p>
         <p class="text-xs text-muted-foreground truncate">{{ replyingTo.text || (replyingTo.file_name ? `📎 ${replyingTo.file_name}` : '') }}</p>
       </div>
       <button class="p-1 rounded-md hover:bg-accent text-muted-foreground flex-shrink-0" @click="replyingTo = null">

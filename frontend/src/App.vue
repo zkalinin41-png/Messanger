@@ -305,7 +305,7 @@ watch(joined, (v) => { if (v) scrollToBottom() })
           </button>
           <span
             class="w-1.5 h-1.5 rounded-full flex-shrink-0 transition-colors"
-            :class="connected ? 'bg-emerald-500' : 'bg-amber-400'"
+            :class="connected ? 'bg-foreground' : 'bg-muted-foreground/40'"
           />
         </div>
 
@@ -350,7 +350,7 @@ watch(joined, (v) => { if (v) scrollToBottom() })
             <span class="truncate flex-1 text-left">{{ group.name }}</span>
             <span
               v-if="group.unread_count > 0"
-              class="ml-auto flex-shrink-0 min-w-[18px] h-[18px] rounded-full bg-violet-600 text-white text-[10px] font-bold flex items-center justify-center px-1"
+              class="ml-auto flex-shrink-0 min-w-[18px] h-[18px] rounded-full bg-foreground text-background text-[10px] font-bold flex items-center justify-center px-1"
             >
               {{ group.unread_count > 99 ? '99+' : group.unread_count }}
             </span>
@@ -383,20 +383,19 @@ watch(joined, (v) => { if (v) scrollToBottom() })
           >
             <div class="relative flex-shrink-0">
               <div
-                class="w-5 h-5 rounded-full flex items-center justify-center text-white text-[9px] font-bold"
-                :style="{ backgroundColor: conv.color }"
+                class="w-5 h-5 rounded-full flex items-center justify-center bg-foreground text-background text-[9px] font-bold"
               >
                 {{ conv.partner.slice(0, 2).toUpperCase() }}
               </div>
               <div
                 class="absolute -bottom-px -right-px w-1.5 h-1.5 rounded-full border border-background"
-                :class="(onlineStatuses[conv.partner]?.online ?? conv.online) ? 'bg-emerald-500' : 'bg-muted-foreground/30'"
+                :class="(onlineStatuses[conv.partner]?.online ?? conv.online) ? 'bg-foreground' : 'bg-muted-foreground/30'"
               />
             </div>
             <span class="text-xs truncate flex-1 text-left">{{ conv.partner }}</span>
             <span
               v-if="conv.unread_count > 0"
-              class="ml-auto flex-shrink-0 min-w-[16px] h-[16px] rounded-full bg-violet-600 text-white text-[9px] font-bold flex items-center justify-center px-0.5"
+              class="ml-auto flex-shrink-0 min-w-[16px] h-[16px] rounded-full bg-foreground text-background text-[9px] font-bold flex items-center justify-center px-0.5"
             >
               {{ conv.unread_count > 99 ? '99+' : conv.unread_count }}
             </span>
@@ -417,12 +416,11 @@ watch(joined, (v) => { if (v) scrollToBottom() })
           >
             <div class="relative flex-shrink-0">
               <div
-                class="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold"
-                :style="{ backgroundColor: user.color }"
+                class="w-6 h-6 rounded-full flex items-center justify-center bg-foreground text-background text-[10px] font-bold"
               >
                 {{ user.username.slice(0, 1).toUpperCase() }}
               </div>
-              <div class="absolute -bottom-px -right-px w-2 h-2 rounded-full bg-emerald-500 border border-background" />
+              <div class="absolute -bottom-px -right-px w-2 h-2 rounded-full bg-foreground border border-background" />
             </div>
             <span
               class="text-xs truncate"
@@ -438,8 +436,7 @@ watch(joined, (v) => { if (v) scrollToBottom() })
         <div class="border-t border-border p-2 space-y-0.5">
           <div class="flex items-center gap-2 px-2 py-1">
             <div
-              class="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
-              :style="{ backgroundColor: currentUserColor }"
+              class="w-7 h-7 rounded-full flex items-center justify-center bg-foreground text-background text-xs font-bold flex-shrink-0"
             >
               {{ username?.slice(0, 1).toUpperCase() }}
             </div>
@@ -503,8 +500,8 @@ watch(joined, (v) => { if (v) scrollToBottom() })
             <Hash class="w-4 h-4 text-muted-foreground flex-shrink-0" />
             <span class="font-semibold text-sm">general</span>
             <div class="ml-auto flex items-center gap-1.5">
-              <Wifi v-if="connected" class="w-3.5 h-3.5 text-emerald-500" />
-              <WifiOff v-else class="w-3.5 h-3.5 text-amber-400" />
+              <Wifi v-if="connected" class="w-3.5 h-3.5 text-foreground/50" />
+              <WifiOff v-else class="w-3.5 h-3.5 text-muted-foreground" />
               <span class="text-xs text-muted-foreground">{{ connected ? 'Live' : 'Reconnecting…' }}</span>
             </div>
           </div>
@@ -532,15 +529,14 @@ watch(joined, (v) => { if (v) scrollToBottom() })
                 class="group flex items-start gap-3 px-2 py-1 -mx-2 rounded-lg hover:bg-accent/30 transition-colors"
               >
                 <div
-                  class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5 select-none"
-                  :style="{ backgroundColor: group.color }"
+                  class="w-8 h-8 rounded-full flex items-center justify-center bg-foreground text-background text-xs font-bold flex-shrink-0 mt-0.5 select-none"
                 >
                   {{ group.username.slice(0, 2).toUpperCase() }}
                 </div>
 
                 <div class="flex-1 min-w-0">
                   <div class="flex items-baseline gap-2 mb-0.5">
-                    <span class="text-sm font-semibold" :style="{ color: group.color }">
+                    <span class="text-sm font-semibold text-foreground">
                       {{ group.username }}
                     </span>
                     <span class="text-[11px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
@@ -635,8 +631,7 @@ watch(joined, (v) => { if (v) scrollToBottom() })
       class="fixed top-4 right-4 z-50 bg-background border border-border rounded-xl shadow-2xl p-4 flex items-center gap-3 min-w-[260px]"
     >
       <div
-        class="w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
-        :style="{ backgroundColor: usernameColor(callPartner ?? '') }"
+        class="w-9 h-9 rounded-full flex items-center justify-center bg-foreground text-background text-xs font-bold flex-shrink-0"
       >
         {{ callPartner?.slice(0, 2).toUpperCase() }}
       </div>
@@ -645,18 +640,18 @@ watch(joined, (v) => { if (v) scrollToBottom() })
         <p class="text-xs text-muted-foreground leading-tight">Incoming video call…</p>
       </div>
       <button
-        class="w-8 h-8 rounded-full bg-emerald-500 hover:bg-emerald-600 flex items-center justify-center transition-colors flex-shrink-0"
+        class="w-8 h-8 rounded-full bg-foreground hover:bg-foreground/80 flex items-center justify-center transition-colors flex-shrink-0"
         title="Accept"
         @click="acceptCall(); openDM(callPartner)"
       >
-        <Phone class="w-3.5 h-3.5 text-white" />
+        <Phone class="w-3.5 h-3.5 text-background" />
       </button>
       <button
-        class="w-8 h-8 rounded-full bg-destructive hover:bg-destructive/90 flex items-center justify-center transition-colors flex-shrink-0"
+        class="w-8 h-8 rounded-full bg-muted hover:bg-muted-foreground/20 flex items-center justify-center transition-colors flex-shrink-0"
         title="Decline"
         @click="rejectCall"
       >
-        <PhoneOff class="w-3.5 h-3.5 text-white" />
+        <PhoneOff class="w-3.5 h-3.5 text-muted-foreground" />
       </button>
     </div>
 

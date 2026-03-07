@@ -246,14 +246,13 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
     <div class="h-12 px-4 flex items-center gap-3 border-b border-border flex-shrink-0">
       <div class="relative flex-shrink-0">
         <div
-          class="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold"
-          :style="{ backgroundColor: partnerColor }"
+          class="w-7 h-7 rounded-full flex items-center justify-center bg-foreground text-background text-xs font-bold"
         >
           {{ partner.slice(0, 2).toUpperCase() }}
         </div>
         <div
           class="absolute -bottom-px -right-px w-2 h-2 rounded-full border border-background"
-          :class="isPartnerOnline ? 'bg-emerald-500' : 'bg-muted-foreground/40'"
+          :class="isPartnerOnline ? 'bg-foreground' : 'bg-muted-foreground/30'"
         />
       </div>
       <div class="min-w-0">
@@ -286,8 +285,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
 
       <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-40 text-muted-foreground">
         <div
-          class="w-12 h-12 rounded-full flex items-center justify-center text-white text-base font-bold mb-3"
-          :style="{ backgroundColor: partnerColor }"
+          class="w-12 h-12 rounded-full flex items-center justify-center bg-foreground text-background text-base font-bold mb-3"
         >
           {{ partner.slice(0, 2).toUpperCase() }}
         </div>
@@ -310,8 +308,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
           <!-- Avatar (partner only) -->
           <div
             v-if="!isMine(msg)"
-            class="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0 mt-auto mb-0.5"
-            :style="{ backgroundColor: partnerColor }"
+            class="w-7 h-7 rounded-full flex items-center justify-center bg-foreground text-background text-[10px] font-bold flex-shrink-0 mt-auto mb-0.5"
           >
             {{ partner.slice(0, 2).toUpperCase() }}
           </div>
@@ -323,7 +320,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
               v-if="msg.reply_to_id"
               class="mb-1 px-2 py-1 rounded-md border-l-2 text-xs opacity-70"
               :class="isMine(msg)
-                ? 'border-violet-400 bg-violet-500/10 text-violet-200'
+                ? 'border-foreground/50 bg-foreground/10'
                 : 'border-muted-foreground bg-muted/60'"
             >
               <span class="font-semibold">{{ msg.reply_to_username }}</span>
@@ -356,14 +353,14 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
               <div v-else-if="editingMsg?.id === msg.id" class="flex flex-col gap-1 w-full">
                 <textarea
                   v-model="editText"
-                  class="rounded-xl border border-violet-500 bg-background px-3 py-2 text-sm outline-none resize-none leading-relaxed"
+                  class="rounded-xl border border-foreground bg-background px-3 py-2 text-sm outline-none resize-none leading-relaxed"
                   rows="2"
                   @keydown.enter.prevent="saveEdit"
                   @keydown.escape="cancelEdit"
                 />
                 <div class="flex gap-1 justify-end">
                   <button class="text-[10px] px-2 py-0.5 rounded text-muted-foreground hover:text-foreground" @click="cancelEdit">Cancel</button>
-                  <button class="text-[10px] px-2 py-0.5 rounded bg-violet-600 text-white hover:bg-violet-700" @click="saveEdit">Save</button>
+                  <button class="text-[10px] px-2 py-0.5 rounded bg-foreground text-background hover:bg-foreground/80" @click="saveEdit">Save</button>
                 </div>
               </div>
 
@@ -372,7 +369,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
                 v-else
                 class="rounded-2xl text-sm leading-relaxed break-words max-w-full overflow-hidden"
                 :class="isMine(msg)
-                  ? 'bg-violet-600 text-white rounded-tr-sm'
+                  ? 'bg-foreground text-background rounded-tr-sm'
                   : 'bg-muted text-foreground rounded-tl-sm'"
               >
                 <!-- File attachment -->
@@ -400,7 +397,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
                     :href="msg.file_url"
                     :download="msg.file_name"
                     class="flex items-center gap-2 px-3 py-2 rounded-xl hover:opacity-80 transition-opacity"
-                    :class="isMine(msg) ? 'bg-violet-500/40' : 'bg-background/50'"
+                    :class="isMine(msg) ? 'bg-foreground/20' : 'bg-background/50'"
                   >
                     <FileText class="w-4 h-4 flex-shrink-0" />
                     <div class="min-w-0">
@@ -433,7 +430,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
               <span v-if="isMine(msg) && !msg.deleted" class="flex-shrink-0">
                 <CheckCheck
                   v-if="msg.status === 'read'"
-                  class="w-3 h-3 text-blue-400"
+                  class="w-3 h-3 text-foreground"
                 />
                 <CheckCheck
                   v-else-if="msg.status === 'delivered'"
@@ -452,8 +449,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
       <!-- Typing indicator -->
       <div v-if="isTyping" class="flex items-center gap-2 py-1">
         <div
-          class="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0"
-          :style="{ backgroundColor: partnerColor }"
+          class="w-7 h-7 rounded-full flex items-center justify-center bg-foreground text-background text-[10px] font-bold flex-shrink-0"
         >
           {{ partner.slice(0, 2).toUpperCase() }}
         </div>
@@ -471,8 +467,8 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
 
     <!-- Reply quote bar -->
     <div v-if="replyingTo" class="px-4 py-2 border-t border-border bg-muted/30 flex items-center gap-2">
-      <div class="flex-1 min-w-0 border-l-2 border-violet-500 pl-2">
-        <p class="text-xs font-semibold text-violet-500">{{ replyingTo.from_user }}</p>
+      <div class="flex-1 min-w-0 border-l-2 border-foreground pl-2">
+        <p class="text-xs font-semibold text-foreground">{{ replyingTo.from_user }}</p>
         <p class="text-xs text-muted-foreground truncate">{{ replyingTo.text || (replyingTo.file_name ? `📎 ${replyingTo.file_name}` : '') }}</p>
       </div>
       <button class="p-1 rounded-md hover:bg-accent text-muted-foreground flex-shrink-0" @click="replyingTo = null">
