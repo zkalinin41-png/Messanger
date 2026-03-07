@@ -391,7 +391,22 @@ const isMine = (name) => name === username.value
                 </div>
 
                 <!-- Normal message content -->
-                <div v-else class="flex items-end gap-2">
+                <div v-else class="relative group/item">
+                  <!-- Floating actions toolbar -->
+                  <div class="absolute -top-8 left-0 z-20 opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                    <MessageActions
+                      :msg="{ ...item, username: grp.username }"
+                      :is-mine="isMine(grp.username)"
+                      message-type="group"
+                      :show-pin="true"
+                      @reply="replyingTo = { id: item.id, text: item.text || '', file_name: item.file_name, username: grp.username, from_user: grp.username }"
+                      @edit="startEdit"
+                      @delete="deleteMessage"
+                      @react="toggleReaction"
+                      @forward="(m) => forwardingMsg = m"
+                      @pin="pinMessage"
+                    />
+                  </div>
                   <div class="flex-1 min-w-0">
                     <!-- File attachment -->
                     <div v-if="item.file_url" class="mb-1">
@@ -429,27 +444,8 @@ const isMine = (name) => name === username.value
                     <p v-if="item.text" class="text-sm leading-relaxed break-words whitespace-pre-wrap">
                       {{ item.text }}
                       <span v-if="item.edited" class="text-[9px] text-muted-foreground/50 italic ml-1">(edited)</span>
+                      <span v-if="grp.items.length > 1" class="text-[10px] text-muted-foreground opacity-0 group-hover/msg:opacity-100 transition-opacity ml-1">{{ formatTime(item.timestamp) }}</span>
                     </p>
-                  </div>
-                  <div class="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity flex-shrink-0">
-                    <span
-                      v-if="grp.items.length > 1"
-                      class="text-[10px] text-muted-foreground pb-px whitespace-nowrap"
-                    >
-                      {{ formatTime(item.timestamp) }}
-                    </span>
-                    <MessageActions
-                      :msg="{ ...item, username: grp.username }"
-                      :is-mine="isMine(grp.username)"
-                      message-type="group"
-                      :show-pin="true"
-                      @reply="replyingTo = { id: item.id, text: item.text || '', file_name: item.file_name, username: grp.username, from_user: grp.username }"
-                      @edit="startEdit"
-                      @delete="deleteMessage"
-                      @react="toggleReaction"
-                      @forward="(m) => forwardingMsg = m"
-                      @pin="pinMessage"
-                    />
                   </div>
                 </div>
 

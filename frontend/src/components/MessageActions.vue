@@ -30,7 +30,7 @@ function copyText() {
 </script>
 
 <template>
-  <div class="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity">
+  <div class="flex items-center bg-background border border-border rounded-md shadow-sm px-0.5 py-0.5 gap-0">
     <!-- Reply -->
     <button
       class="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
@@ -72,7 +72,7 @@ function copyText() {
       :title="copied ? 'Copied!' : 'Copy'"
       @click="copyText"
     >
-      <Copy class="w-3 h-3" :class="copied ? 'text-emerald-500' : ''" />
+      <Copy class="w-3 h-3" />
     </button>
 
     <!-- Forward -->
@@ -107,7 +107,7 @@ function copyText() {
     <!-- Delete (own messages only) -->
     <button
       v-if="isMine && !msg.deleted"
-      class="p-1 rounded hover:bg-accent text-muted-foreground hover:text-destructive transition-colors"
+      class="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
       title="Delete"
       @click="$emit('delete', msg)"
     >

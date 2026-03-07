@@ -313,7 +313,7 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
             {{ partner.slice(0, 2).toUpperCase() }}
           </div>
 
-          <div class="max-w-[70%] group/msg" :class="isMine(msg) ? 'items-end' : 'items-start'" style="display:flex;flex-direction:column">
+          <div class="max-w-[72%] group/msg" :class="isMine(msg) ? 'items-end' : 'items-start'" style="display:flex;flex-direction:column">
 
             <!-- Reply quote -->
             <div
@@ -327,21 +327,26 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
               <p class="truncate opacity-80">{{ msg.reply_to_text }}</p>
             </div>
 
-            <!-- Bubble + actions row -->
-            <div class="flex items-center gap-1.5" :class="isMine(msg) ? 'flex-row-reverse' : 'flex-row'">
+            <!-- Bubble with floating actions -->
+            <div class="relative">
 
-              <!-- Action buttons (hover) -->
-              <MessageActions
+              <!-- Floating actions toolbar (above bubble on hover) -->
+              <div
                 v-if="!msg.deleted"
-                :msg="msg"
-                :is-mine="isMine(msg)"
-                message-type="dm"
-                @reply="replyingTo = $event"
-                @edit="startEdit"
-                @delete="deleteMessage"
-                @react="toggleReaction"
-                @forward="(m) => forwardingMsg = m"
-              />
+                class="absolute -top-8 z-20 opacity-0 group-hover/msg:opacity-100 transition-opacity"
+                :class="isMine(msg) ? 'right-0' : 'left-0'"
+              >
+                <MessageActions
+                  :msg="msg"
+                  :is-mine="isMine(msg)"
+                  message-type="dm"
+                  @reply="replyingTo = $event"
+                  @edit="startEdit"
+                  @delete="deleteMessage"
+                  @react="toggleReaction"
+                  @forward="(m) => forwardingMsg = m"
+                />
+              </div>
 
               <!-- Deleted message -->
               <div v-if="msg.deleted" class="rounded-2xl px-3 py-2 text-sm italic opacity-50 bg-muted/30 text-muted-foreground">
@@ -421,25 +426,16 @@ const canSend = computed(() => !!messageInput.value.trim() || !!pendingFile.valu
             />
 
             <!-- Time + status + edited -->
-            <div class="flex items-center gap-1 mt-0.5 px-1" :class="isMine(msg) ? 'flex-row-reverse' : 'flex-row'">
+            <div class="flex items-center gap-1 mt-0.5 px-0.5" :class="isMine(msg) ? 'flex-row-reverse' : 'flex-row'">
               <span class="text-[10px] text-muted-foreground opacity-0 group-hover/msg:opacity-100 transition-opacity">
                 {{ formatTime(msg.timestamp) }}
               </span>
               <span v-if="msg.edited" class="text-[9px] text-muted-foreground/60 italic">(edited)</span>
               <!-- Status ticks (own messages only) -->
               <span v-if="isMine(msg) && !msg.deleted" class="flex-shrink-0">
-                <CheckCheck
-                  v-if="msg.status === 'read'"
-                  class="w-3 h-3 text-foreground"
-                />
-                <CheckCheck
-                  v-else-if="msg.status === 'delivered'"
-                  class="w-3 h-3 text-muted-foreground"
-                />
-                <Check
-                  v-else
-                  class="w-3 h-3 text-muted-foreground/60"
-                />
+                <CheckCheck v-if="msg.status === 'read'" class="w-3 h-3 text-foreground" />
+                <CheckCheck v-else-if="msg.status === 'delivered'" class="w-3 h-3 text-muted-foreground" />
+                <Check v-else class="w-3 h-3 text-muted-foreground/60" />
               </span>
             </div>
           </div>
