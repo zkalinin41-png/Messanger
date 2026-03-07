@@ -106,7 +106,9 @@ const messageGroups = computed(() => {
 })
 
 function formatTime(ts) {
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  if (!ts) return ''
+  const d = new Date(ts)
+  return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 function formatDateSep(ts) {
